@@ -13,28 +13,8 @@ module neuron_proc #(
     parameter int PARALLEL_INPUTS    = 32
 ) (
     input logic clk,
-    input logic rst,
-
-    // AXI streaming configuration interface (consumer)
-    input  logic                          config_valid,
-    output logic                          config_ready,
-    input  logic [  CONFIG_BUS_WIDTH-1:0] config_data,
-    input  logic [CONFIG_BUS_WIDTH/8-1:0] config_keep,
-    input  logic                          config_last,
-
-    // AXI streaming image input interface (consumer)
-    input  logic                         data_in_valid,
-    output logic                         data_in_ready,
-    input  logic [  INPUT_BUS_WIDTH-1:0] data_in_data,
-    input  logic [INPUT_BUS_WIDTH/8-1:0] data_in_keep,
-    input  logic                         data_in_last,
-
-    // AXI streaming classification output interface (producer)
-    output logic                          data_out_valid,
-    input  logic                          data_out_ready,
-    output logic [  OUTPUT_BUS_WIDTH-1:0] data_out_data,
-    output logic [OUTPUT_BUS_WIDTH/8-1:0] data_out_keep,
-    output logic                          data_out_last
+    input logic rst
+    
 );
 
 endmodule
