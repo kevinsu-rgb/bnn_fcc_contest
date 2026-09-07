@@ -7,13 +7,16 @@ module argmax #(
     output logic [     OUT_WIDTH-1:0] max_index
 );
 
+    logic [POPCOUNT_WIDTH-1:0] max_value;
+
     always_comb begin
-        int max_val;
-        max_val = -1;
+        max_value = '0;
         max_index = '0;
         for (int n = 0; n < NUM_NEURONS; n++) begin
-            if (int'(popcounts[n]) > max_val) begin
-                max_val = int'(popcounts[n]);
+            // Deliberately use a strict comparison: equal counts retain the
+            // lowest-indexed neuron, matching the reference model.
+            if (popcounts[n] > max_value) begin
+                max_value = popcounts[n];
                 max_index = OUT_WIDTH'(n);
             end
         end

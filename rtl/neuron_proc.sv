@@ -16,9 +16,12 @@ module neuron_proc #(
     always_comb begin
         popcount_out = '0;
         for (int i = 0; i < INPUT_DATA_WIDTH; i++) begin
-            popcount_out = popcount_out + POPCOUNT_WIDTH'(xnor_result[i]);
+            popcount_out = popcount_out + xnor_result[i];
         end
-        out_data = (32'(popcount_out) >= threshold);
+
+        // Both operands are unsigned packed vectors.  SystemVerilog extends
+        // the narrower one before comparing, avoiding a fixed 32-bit cast.
+        out_data = (popcount_out >= threshold);
     end
 
 endmodule

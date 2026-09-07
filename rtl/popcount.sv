@@ -9,7 +9,9 @@ module popcount #(
     always_comb begin
         out_count = '0;
         for (int i = 0; i < INPUT_WIDTH; i++) begin
-            out_count = out_count + OUT_WIDTH'(in_data[i]);
+            // The left operand sets the result width, so a correctly sized
+            // OUT_WIDTH can represent every value from 0 through INPUT_WIDTH.
+            out_count = out_count + in_data[i];
         end
     end
 
