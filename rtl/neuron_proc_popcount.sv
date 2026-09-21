@@ -1,19 +1,13 @@
-module neuron_proc #(
+module neuron_proc_popcount #(
     parameter int INPUT_DATA_WIDTH = 784,
-    parameter int THRESHOLD_WIDTH  = 32,
     parameter int POPCOUNT_WIDTH   = $clog2(INPUT_DATA_WIDTH + 1)
 ) (
-    input  logic                         clk,
-    input  logic                         rst,
-    input  logic                         en,
     input  logic [ INPUT_DATA_WIDTH-1:0] data_in,
     input  logic [ INPUT_DATA_WIDTH-1:0] weight,
-    input  logic [  THRESHOLD_WIDTH-1:0] threshold,
-    output logic                         data_out
+    output logic [  POPCOUNT_WIDTH-1:0]  popcount_out
 );
 
     logic [INPUT_DATA_WIDTH-1:0] xnor_result;
-    logic [  POPCOUNT_WIDTH-1:0] popcount_out;
     assign xnor_result = ~(data_in ^ weight);
 
     always_comb begin
@@ -21,13 +15,9 @@ module neuron_proc #(
         for (int i = 0; i < INPUT_DATA_WIDTH; i++) begin
             popcount_out = popcount_out + xnor_result[i];
         end
-    end
 
-    always_ff @(posedge clk) begin
         // Both operands are unsigned packed vectors.  SystemVerilog extends
         // the narrower one before comparing, avoiding a fixed 32-bit cast.
-        if (rst) data_out <= '0;
-        else if (en) data_out <= (popcount_out >= threshold);
     end
 
 endmodule

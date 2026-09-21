@@ -6,8 +6,8 @@ module binarize #(
     input  logic                          clk,
     input  logic                          rst,
     input  logic                          en,
-    input  logic [PIXEL_DATA_WIDTH-1:0]   in_data [PIXEL_NUM-1:0],
-    output logic [OUTPUT_DATA_WIDTH-1:0]  out_data
+    input  logic [PIXEL_DATA_WIDTH-1:0]   data_in [PIXEL_NUM-1:0],
+    output logic [OUTPUT_DATA_WIDTH-1:0]  data_out
 );
 
     logic [OUTPUT_DATA_WIDTH-1:0] binarized_data;
@@ -22,15 +22,15 @@ module binarize #(
     always_comb begin
         binarized_data = '0;
         for (int i = 0; (i < PIXEL_NUM) && (i < OUTPUT_DATA_WIDTH); i++) begin
-            binarized_data[i] = (in_data[i] >= BINARIZE_THRESHOLD);
+            binarized_data[i] = (data_in[i] >= BINARIZE_THRESHOLD);
         end
     end
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            out_data <= '0;
+            data_out <= '0;
         end else if (en) begin
-            out_data <= binarized_data;
+            data_out <= binarized_data;
         end
     end
 
