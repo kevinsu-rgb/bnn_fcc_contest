@@ -2,6 +2,8 @@
 // Feeds weight/threshold payload bytes (per-neuron ceil(F/8) bytes LSB-first with pad bits 1; thresholds
 // 4 bytes little-endian) with random s_valid gaps, captures the config writes into shadow memories and
 // checks them against the bnn_layer layout contract. Also exercises abort mid-message.
+// idle: must be low from the cycle after start until the message's last write, high from the cycle
+// after that write, and high after an abort.
 module cw_case import bnn_fcc_pkg::*; #(
   parameter int F  = 8,
   parameter int N  = 8,
@@ -31,6 +33,7 @@ module cw_case import bnn_fcc_pkg::*; #(
   logic [PW-1:0]       w_data;
   logic [TADDR_W-1:0]  t_addr;
   logic [THR_W-1:0]    t_data;
+  logic                idle;
 
   cfg_layer_writer #(.F(F), .N(N), .PW(PW), .PN(PN), .HAS_THR(1'b1)) dut (.*);
 
@@ -46,6 +49,9 @@ module cw_case import bnn_fcc_pkg::*; #(
   bit               tseen [PN][GROUPS];
   int               n_wr, n_tr;
   bit               mon_on = 1'b0;
+  bit               idle_chk = 1'b0;    // armed: idle must stay low until the last expected write
+  bit               idle_after = 1'b0;  // idle must be high in the cycle after the last write
+  int               idle_target;        // writes (weights + thresholds) expected for the armed message
 
   function automatic int clampf(int v);
     if (v < 0) return 0;
@@ -55,6 +61,13 @@ module cw_case import bnn_fcc_pkg::*; #(
 
   always @(posedge clk) if (mon_on) begin : mon
     int g, p, n;
+    if (idle_after && idle !== 1'b1) begin
+      errors++; $error("F=%0d N=%0d PW=%0d PN=%0d: idle not high after the last write", F, N, PW, PN);
+    end
+    idle_after = 1'b0;
+    if (idle_chk && idle !== 1'b0) begin
+      errors++; $error("F=%0d N=%0d PW=%0d PN=%0d: idle high mid-message (%0d/%0d writes)", F, N, PW, PN, n_wr + n_tr, idle_target);
+    end
     if (w_we) begin
       g = int'(w_addr) / PASSES; p = int'(w_addr) % PASSES; n = g * PN + int'(w_lane);
       if (int'(w_lane) >= PN || int'(w_addr) >= GP) begin
@@ -84,6 +97,10 @@ module cw_case import bnn_fcc_pkg::*; #(
       end
       n_tr++;
     end
+    if (idle_chk && n_wr + n_tr == idle_target) begin
+      idle_chk   = 1'b0;
+      idle_after = 1'b1;
+    end
   end
 
   task automatic clear_seen();
@@ -101,6 +118,22 @@ module cw_case import bnn_fcc_pkg::*; #(
     if (is_abort) abort <= 1'b1; else start <= 1'b1;
     @(negedge clk);
     start <= 1'b0; abort <= 1'b0;
+  endtask
+
+  // arm the idle check for a complete message (call right after pulse(0))
+  task automatic arm_idle(input int target);
+    idle_target = target;
+    idle_chk    = 1'b1;
+  endtask
+
+  task automatic check_idle_high(string what);
+    if (idle !== 1'b1) begin
+      errors++; $error("F=%0d N=%0d PW=%0d PN=%0d (%s): idle not high", F, N, PW, PN, what);
+    end
+    if (idle_chk) begin
+      errors++; $error("F=%0d N=%0d PW=%0d PN=%0d (%s): last write never seen (%0d/%0d)", F, N, PW, PN, what, n_wr + n_tr, idle_target);
+      idle_chk = 1'b0;
+    end
   endtask
 
   // send first `cnt` bytes of bq with random valid gaps; checks s_ready is independent of s_valid
@@ -215,6 +248,7 @@ module cw_case import bnn_fcc_pkg::*; #(
     repeat (4) @(negedge clk);
     rst <= 1'b0;
     repeat (2) @(negedge clk);
+    check_idle_high("after reset");
     mon_on = 1'b1;
 
     // weights: clean message
@@ -222,8 +256,10 @@ module cw_case import bnn_fcc_pkg::*; #(
     rnd_weights(); build_weights();
     clear_seen();
     pulse(0);
+    arm_idle(N * PASSES);
     send(bq.size());
     repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+    check_idle_high("weights");
     check_weights("clean");
 
     // weights: aborted message (several cut points), then a full message into the same memories
@@ -235,12 +271,15 @@ module cw_case import bnn_fcc_pkg::*; #(
       pulse(0);
       send(cut);
       pulse(1);
+      check_idle_high("after weight abort");
       repeat (3) @(negedge clk);
       rnd_weights(); build_weights();
       clear_seen();
       pulse(0);
+      arm_idle(N * PASSES);
       send(bq.size());
       repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+      check_idle_high("weights after abort");
       check_weights($sformatf("after abort@%0d", cut));
     end
 
@@ -250,8 +289,10 @@ module cw_case import bnn_fcc_pkg::*; #(
       rnd_thr(r); build_thr();
       clear_seen();
       pulse(0);
+      arm_idle(N);
       send(bq.size());
       repeat (3) @(negedge clk);
+      check_idle_high("thresholds");
       check_thr($sformatf("round %0d", r));
     end
     // thresholds: abort mid-message (cut inside a threshold word), then full
@@ -260,11 +301,14 @@ module cw_case import bnn_fcc_pkg::*; #(
     pulse(0);
     send(bq.size() > 2 ? bq.size() - 2 : 1);
     pulse(1);
+    check_idle_high("after threshold abort");
     rnd_thr(3); build_thr();
     clear_seen();
     pulse(0);
+    arm_idle(N);
     send(bq.size());
     repeat (3) @(negedge clk);
+    check_idle_high("thresholds after abort");
     check_thr("after abort");
 
     // a weight message after thresholds still works (msg_type switch)
@@ -272,8 +316,10 @@ module cw_case import bnn_fcc_pkg::*; #(
     rnd_weights(); build_weights();
     clear_seen();
     pulse(0);
+    arm_idle(N * PASSES);
     send(bq.size());
     repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+    check_idle_high("weights");
     check_weights("after thr");
     if (n_tr != 0) begin errors++; $error("threshold write during weight message"); end
 

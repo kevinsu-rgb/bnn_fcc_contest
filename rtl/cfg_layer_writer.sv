@@ -3,6 +3,8 @@
 // (8 -> PW bits, pad 1) and each emitted word is written to lane (neuron % PN) at
 // group*PASSES + pass. Thresholds: 4 bytes little-endian, signed 32-bit, clamped to [0, F+1].
 // s_ready depends on registered state only. Writes are single-cycle pulses.
+// idle: low from the cycle after start until the message's last write (weights: flush of neuron N-1;
+// thresholds: write of neuron N-1), high from the cycle after it; abort and rst force it high.
 module cfg_layer_writer import bnn_fcc_pkg::*; #(
   parameter int F       = 8,
   parameter int N       = 8,
@@ -27,7 +29,8 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   output logic                                    t_we,
   output logic [bits(PN)-1:0]                     t_lane,
   output logic [bits(cdiv(N,PN))-1:0]             t_addr,
-  output logic [bits(F+2)-1:0]                    t_data
+  output logic [bits(F+2)-1:0]                    t_data,
+  output logic                                    idle
 );
   localparam int GROUPS  = cdiv(N, PN);
   localparam int PASSES  = cdiv(F, PW);
@@ -38,6 +41,9 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   localparam int BPN     = cdiv(F, 8);
   localparam int BN_W    = bits(BPN);
   localparam int LAST_BITS = F - 8 * (BPN - 1);
+  localparam logic [LANE_W-1:0]  LAST_LANE  = LANE_W'((N - 1) % PN);        // lane of neuron N-1
+  localparam logic [WADDR_W-1:0] LAST_GBASE = WADDR_W'((GROUPS - 1) * PASSES);
+  localparam logic [TADDR_W-1:0] LAST_GRP   = TADDR_W'(GROUPS - 1);
 
   logic clr;
   assign clr = start || abort;
@@ -91,6 +97,18 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
         waddr_q <= waddr_q + 1'b1;
       end
     end
+  end
+
+  // ---------------- idle (message active until its last write)
+  logic active_q, w_done, t_done;
+  assign w_done = !msg_type && pk_flush_done && (lane_q == LAST_LANE) && (gbase_q == LAST_GBASE);
+  assign t_done = msg_type && (HAS_THR ? (t_we && t_lane == LAST_LANE && t_addr == LAST_GRP) : 1'b1);
+  assign idle   = !active_q;
+
+  always_ff @(posedge clk) begin
+    if (rst || abort)          active_q <= 1'b0;
+    else if (start)            active_q <= 1'b1;
+    else if (w_done || t_done) active_q <= 1'b0;
   end
 
   // ---------------- thresholds
