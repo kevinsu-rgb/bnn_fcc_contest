@@ -2,6 +2,7 @@
 // Write: per-bit enable decoded from wr_idx (bit j <- wr_data[j % WR_W], chunk j / WR_W).
 // Read: rd_data is registered (1-cycle latency) and independent of the full flags, so a read
 // issued in the same cycle as rls_en still returns that bank's data.
+// If commit_en and rls_en target the same bank in the same cycle, commit wins.
 module pingpong_buf import bnn_fcc_pkg::*; #(
   parameter int NBITS = 8,
   parameter int WR_W  = 8,

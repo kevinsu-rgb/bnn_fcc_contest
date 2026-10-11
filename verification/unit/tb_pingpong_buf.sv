@@ -70,26 +70,37 @@ module pp_case import bnn_fcc_pkg::*; #(
     end
   endtask
 
+  // Latency-exact: each cycle a new request is driven, then (1 ns later) rd_data must still
+  // hold the response to the PREVIOUS cycle's request (a combinational read would show the new one).
   task automatic read_bank(input int b);
     int  ord [];
-    logic [RD_W-1:0] exp;
+    int  idx;
+    logic [RD_W-1:0] exp_prev, exp_new;
+    bit  have_prev;
     shuffle(NRD);
     ord = order;
+    have_prev = 1'b0;
     for (int n = 0; n < NRD; n++) begin
-      // occasional garbage request (not checked) to prove rd_data follows the previous cycle
-      if ($urandom_range(3, 0) == 0) begin
-        rd_bank <= $urandom; rd_idx <= $urandom;
+      for (int g = 0; g < 2; g++) begin
+        if (g == 0 && $urandom_range(3, 0) != 0) continue;   // g==0: occasional extra request
+        idx = (g == 0) ? $urandom_range(NRD - 1, 0) : ord[n];
+        for (int k = 0; k < RD_W; k++)
+          exp_new[k] = (idx * RD_W + k < NBITS) ? mdl[b][idx * RD_W + k] : 1'b0;
+        rd_bank <= b[0]; rd_idx <= idx;
+        if (g == 1 && n == NRD - 1) begin rls_en <= 1'b1; rls_bank <= b[0]; end  // release with last read
+        else begin rls_en <= 1'b0; rls_bank <= $urandom; end
+        #1;
+        if (have_prev && rd_data !== exp_prev)
+          fail($sformatf("bank %0d: rd_data %h != previous request's data %h", b, rd_data, exp_prev));
+        exp_prev = exp_new; have_prev = 1'b1;
         @(negedge clk);
       end
-      rd_bank <= b[0]; rd_idx <= ord[n];
-      if (n == NRD - 1) begin rls_en <= 1'b1; rls_bank <= b[0]; end  // release with the last read
-      @(negedge clk);
-      rls_en <= 1'b0; rls_bank <= $urandom;
-      for (int k = 0; k < RD_W; k++)
-        exp[k] = (ord[n] * RD_W + k < NBITS) ? mdl[b][ord[n] * RD_W + k] : 1'b0;
-      if (rd_data !== exp)
-        fail($sformatf("bank %0d word %0d exp=%h got=%h", b, ord[n], exp, rd_data));
     end
+    // drain: last response appears one cycle after the last request
+    rls_en <= 1'b0; rls_bank <= $urandom;
+    #1;
+    if (rd_data !== exp_prev)
+      fail($sformatf("bank %0d: final rd_data %h != %h", b, rd_data, exp_prev));
     if (full[b] !== 1'b0) fail($sformatf("bank %0d still full after release", b));
   endtask
 
@@ -146,6 +157,12 @@ module tb_pingpong_buf;
   pp_case #(.NBITS(7),   .WR_W(4),  .RD_W(2))  c5 (.clk(clk), .done(done[5]), .errors(errs[5]));
   pp_case #(.NBITS(5),   .WR_W(8),  .RD_W(8))  c6 (.clk(clk), .done(done[6]), .errors(errs[6]));
   pp_case #(.NBITS(100), .WR_W(7),  .RD_W(11)) c7 (.clk(clk), .done(done[7]), .errors(errs[7]));
+
+  initial begin
+    #50ms;
+    $error("tb_pingpong_buf: timeout");
+    $finish;
+  end
 
   int total;
   initial begin
