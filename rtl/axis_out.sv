@@ -20,6 +20,9 @@ module axis_out import bnn_fcc_pkg::*; #(
   localparam int PW = bits(DEPTH);
   localparam int KEEP_N = cdiv(DATA_W, 8);
 
+  assign m_keep = (BUS_W/8)'((1 << KEEP_N) - 1);
+  assign m_last = 1'b1;
+
   logic [DATA_W-1:0] mem [DEPTH];
   logic [PW-1:0]     wr_q, rd_q;
   logic [bits(DEPTH+1)-1:0] fcnt;
@@ -30,8 +33,6 @@ module axis_out import bnn_fcc_pkg::*; #(
     if (push) mem[wr_q] <= push_data;
     if (load) begin
       m_data <= BUS_W'(mem[rd_q]);
-      m_keep <= (BUS_W/8)'((1 << KEEP_N) - 1);
-      m_last <= 1'b1;
     end
   end
 

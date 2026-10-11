@@ -45,6 +45,12 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   localparam logic [WADDR_W-1:0] LAST_GBASE = WADDR_W'((GROUPS - 1) * PASSES);
   localparam logic [TADDR_W-1:0] LAST_GRP   = TADDR_W'(GROUPS - 1);
 
+  // Message type is latched at start so a writer's tail flush does not depend on the
+  // parser's (shared) msg_type staying stable after the message's last byte.
+  logic mt_q, mt;
+  always_ff @(posedge clk) if (start) mt_q <= msg_type;
+  assign mt = start ? msg_type : mt_q;
+
   logic clr;
   assign clr = start || abort;
 
@@ -65,13 +71,13 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
 
   bit_packer #(.IN_W(8), .OUT_W(PW), .PAD(1'b1)) u_pk (
     .clk(clk), .rst(rst), .clear(clr),
-    .in_valid(s_valid && !msg_type), .in_ready(pk_ready),
+    .in_valid(s_valid && !mt), .in_ready(pk_ready),
     .in_bits(s_byte), .in_count(nbits), .in_flush(last_byte),
     .out_valid(pk_valid), .out_word(pk_word), .flush_done(pk_flush_done)
   );
 
-  assign s_ready = msg_type ? 1'b1 : pk_ready;
-  assign w_we    = pk_valid && !msg_type;
+  assign s_ready = mt ? 1'b1 : pk_ready;
+  assign w_we    = pk_valid && !mt;
   assign w_lane  = lane_q;
   assign w_addr  = waddr_q;
   assign w_data  = pk_word;
@@ -82,7 +88,7 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
       lane_q  <= '0;
       waddr_q <= '0;
       gbase_q <= '0;
-    end else if (!msg_type) begin
+    end else if (!mt) begin
       if (acc) bn_q <= last_byte ? '0 : bn_q + 1'b1;
       if (pk_flush_done) begin
         if (lane_q == LANE_W'(PN - 1)) begin
@@ -101,8 +107,8 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
 
   // ---------------- idle (message active until its last write)
   logic active_q, w_done, t_done;
-  assign w_done = !msg_type && pk_flush_done && (lane_q == LAST_LANE) && (gbase_q == LAST_GBASE);
-  assign t_done = msg_type && (HAS_THR ? (t_we && t_lane == LAST_LANE && t_addr == LAST_GRP) : 1'b1);
+  assign w_done = !mt && pk_flush_done && (lane_q == LAST_LANE) && (gbase_q == LAST_GBASE);
+  assign t_done = mt && (HAS_THR ? (t_we && t_lane == LAST_LANE && t_addr == LAST_GRP) : 1'b1);
   assign idle   = !active_q;
 
   always_ff @(posedge clk) begin
@@ -134,7 +140,7 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
         tsh_q   <= '0;
         tlane_q <= '0;
         tgrp_q  <= '0;
-      end else if (msg_type && acc) begin
+      end else if (mt && acc) begin
         tsh_q <= {s_byte, tsh_q[23:8]};
         tb_q  <= tb_q + 1'b1;
         if (tb_q == 2'd3) begin

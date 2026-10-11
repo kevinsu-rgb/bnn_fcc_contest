@@ -26,7 +26,10 @@ module cfgseq_harness #(
   parameter int TOPOLOGY[TOTAL_LAYERS] = '{20, 12, 9, 5},
   parameter int PARALLEL_INPUTS = 4,
   parameter int PARALLEL_NEURONS[TOTAL_LAYERS-1] = '{3, 4, 2},
-  parameter int SEED = 1
+  parameter int SEED = 1,
+  parameter int POPCOUNT_LPS = 3,
+  parameter int ARGMAX_LPS = 2,
+  parameter int FIFO_DEPTH = 4
 ) (
   input  logic go,
   output logic done,
@@ -74,7 +77,9 @@ module cfgseq_harness #(
     .INPUT_DATA_WIDTH(8), .INPUT_BUS_WIDTH(BUS_W), .CONFIG_BUS_WIDTH(BUS_W),
     .OUTPUT_DATA_WIDTH(4), .OUTPUT_BUS_WIDTH(8),
     .TOTAL_LAYERS(TOTAL_LAYERS), .TOPOLOGY(TOPOLOGY),
-    .PARALLEL_INPUTS(PARALLEL_INPUTS), .PARALLEL_NEURONS(PARALLEL_NEURONS)
+    .PARALLEL_INPUTS(PARALLEL_INPUTS), .PARALLEL_NEURONS(PARALLEL_NEURONS),
+    .POPCOUNT_LEVELS_PER_STAGE(POPCOUNT_LPS), .ARGMAX_LEVELS_PER_STAGE(ARGMAX_LPS),
+    .OUT_FIFO_DEPTH(FIFO_DEPTH)
   ) dut (.*);
 
   // ---------------- TB state
@@ -1169,9 +1174,9 @@ module cfgseq_harness #(
 endmodule
 
 module tb_cfg_sequences;
-  logic go4 = 1'b0, go5 = 1'b0;
-  logic done4, done5;
-  int   nerr4, nerr5;
+  logic go4 = 1'b0, go5 = 1'b0, go6 = 1'b0;
+  logic done4, done5, done6;
+  int   nerr4, nerr5, nerr6;
 
   cfgseq_harness #(
     .NAME("topo4"), .TOTAL_LAYERS(4), .TOPOLOGY('{20, 12, 9, 5}),
@@ -1183,13 +1188,22 @@ module tb_cfg_sequences;
     .PARALLEL_INPUTS(5), .PARALLEL_NEURONS('{4, 9, 5, 6}), .SEED(29)
   ) u_topo5 (.go(go5), .done(done5), .nerr(nerr5));
 
+  // Non-default pipelining: deepest popcount/argmax pipelines and a single-entry output FIFO.
+  cfgseq_harness #(
+    .NAME("topo4_lps1"), .TOTAL_LAYERS(4), .TOPOLOGY('{20, 12, 9, 5}),
+    .PARALLEL_INPUTS(4), .PARALLEL_NEURONS('{3, 4, 2}), .SEED(41),
+    .POPCOUNT_LPS(1), .ARGMAX_LPS(1), .FIFO_DEPTH(1)
+  ) u_topo4_lps1 (.go(go6), .done(done6), .nerr(nerr6));
+
   initial begin
     go4 = 1'b1;
     wait (done4 === 1'b1);
     go5 = 1'b1;
     wait (done5 === 1'b1);
-    if (nerr4 == 0 && nerr5 == 0) $display("SUCCESS: tb_cfg_sequences");
-    else $display("tb_cfg_sequences: %0d + %0d errors", nerr4, nerr5);
+    go6 = 1'b1;
+    wait (done6 === 1'b1);
+    if (nerr4 == 0 && nerr5 == 0 && nerr6 == 0) $display("SUCCESS: tb_cfg_sequences");
+    else $display("tb_cfg_sequences: %0d + %0d + %0d errors", nerr4, nerr5, nerr6);
     $finish;
   end
 endmodule

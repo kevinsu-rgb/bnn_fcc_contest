@@ -67,21 +67,49 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     localparam int IDX_W = bits(N_O);
     localparam int CRD_W = bits(2 * OUT_FIFO_DEPTH + 2);
 
-    // ---------------- elaboration-time checks (spec §3.1)
-    initial begin
-        if (TOTAL_LAYERS < 2) $fatal(1, "bnn_fcc: TOTAL_LAYERS must be >= 2");
-        if (PARALLEL_INPUTS < 1) $fatal(1, "bnn_fcc: PARALLEL_INPUTS must be >= 1");
-        for (int i = 0; i < TOTAL_LAYERS; i++)
-            if (TOPOLOGY[i] < 1 || TOPOLOGY[i] >= 65536)
-                $fatal(1, "bnn_fcc: TOPOLOGY[%0d] = %0d out of range 1..65535", i, TOPOLOGY[i]);
-        for (int l = 0; l < TOTAL_LAYERS - 1; l++)
-            if (PARALLEL_NEURONS[l] < 1) $fatal(1, "bnn_fcc: PARALLEL_NEURONS[%0d] must be >= 1", l);
-        if (INPUT_DATA_WIDTH % 8 != 0) $fatal(1, "bnn_fcc: INPUT_DATA_WIDTH must be a multiple of 8");
-        if (INPUT_BUS_WIDTH % INPUT_DATA_WIDTH != 0)
-            $fatal(1, "bnn_fcc: INPUT_BUS_WIDTH must be a multiple of INPUT_DATA_WIDTH");
-        if (CONFIG_BUS_WIDTH % 8 != 0) $fatal(1, "bnn_fcc: CONFIG_BUS_WIDTH must be a multiple of 8");
-        if (bits(N_O) > OUTPUT_DATA_WIDTH) $fatal(1, "bnn_fcc: OUTPUT_DATA_WIDTH too small for %0d classes", N_O);
-        if (OUTPUT_DATA_WIDTH > OUTPUT_BUS_WIDTH) $fatal(1, "bnn_fcc: OUTPUT_DATA_WIDTH must be <= OUTPUT_BUS_WIDTH");
+    // ---------------- elaboration-time checks (spec §3.1; generate-scope so synthesis enforces them too)
+    if (TOTAL_LAYERS < 2) begin : g_chk1
+        $fatal(1, "bnn_fcc: TOTAL_LAYERS must be >= 2");
+    end
+    if (PARALLEL_INPUTS < 1) begin : g_chk2
+        $fatal(1, "bnn_fcc: PARALLEL_INPUTS must be >= 1");
+    end
+    for (genvar i = 0; i < TOTAL_LAYERS; i++) begin : g_chk_topo
+        if (TOPOLOGY[i] < 1 || TOPOLOGY[i] >= 65536) begin : g_bad
+            $fatal(1, "bnn_fcc: TOPOLOGY[%0d] = %0d out of range 1..65535", i, TOPOLOGY[i]);
+        end
+    end
+    for (genvar l = 0; l < TOTAL_LAYERS - 1; l++) begin : g_chk_pn
+        if (PARALLEL_NEURONS[l] < 1) begin : g_bad
+            $fatal(1, "bnn_fcc: PARALLEL_NEURONS[%0d] must be >= 1", l);
+        end
+    end
+    if (INPUT_DATA_WIDTH % 8 != 0) begin : g_chk3
+        $fatal(1, "bnn_fcc: INPUT_DATA_WIDTH must be a multiple of 8");
+    end
+    if (INPUT_BUS_WIDTH % INPUT_DATA_WIDTH != 0) begin : g_chk4
+        $fatal(1, "bnn_fcc: INPUT_BUS_WIDTH must be a multiple of INPUT_DATA_WIDTH");
+    end
+    if (CONFIG_BUS_WIDTH % 8 != 0) begin : g_chk5
+        $fatal(1, "bnn_fcc: CONFIG_BUS_WIDTH must be a multiple of 8");
+    end
+    if (bits(N_O) > OUTPUT_DATA_WIDTH) begin : g_chk6
+        $fatal(1, "bnn_fcc: OUTPUT_DATA_WIDTH too small for %0d classes", N_O);
+    end
+    if (OUTPUT_DATA_WIDTH > OUTPUT_BUS_WIDTH) begin : g_chk7
+        $fatal(1, "bnn_fcc: OUTPUT_DATA_WIDTH must be <= OUTPUT_BUS_WIDTH");
+    end
+    if (OUT_FIFO_DEPTH < 1) begin : g_chk8
+        $fatal(1, "bnn_fcc: OUT_FIFO_DEPTH must be >= 1");
+    end
+    if (POPCOUNT_LEVELS_PER_STAGE < 1) begin : g_chk9
+        $fatal(1, "bnn_fcc: POPCOUNT_LEVELS_PER_STAGE must be >= 1");
+    end
+    if (ARGMAX_LEVELS_PER_STAGE < 1) begin : g_chk10
+        $fatal(1, "bnn_fcc: ARGMAX_LEVELS_PER_STAGE must be >= 1");
+    end
+    if (RAM_STYLE != "auto" && RAM_STYLE != "block" && RAM_STYLE != "distributed") begin : g_chk11
+        $fatal(1, "bnn_fcc: RAM_STYLE must be \"auto\", \"block\" or \"distributed\"");
     end
 
     // ---------------- configuration path

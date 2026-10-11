@@ -8,7 +8,8 @@ module bl_case import bnn_fcc_pkg::*; #(
   parameter int PW        = 8,
   parameter int PN        = 8,
   parameter bit IS_OUTPUT = 1'b0,
-  parameter int NIMG      = 20
+  parameter int NIMG      = 20,
+  parameter int LPS       = 3     // POPCOUNT_LEVELS_PER_STAGE
 ) (
   input  logic clk,
   output logic done,
@@ -67,7 +68,7 @@ module bl_case import bnn_fcc_pkg::*; #(
   logic                 img_start, busy;
 
   bnn_layer #(.F(F), .N(N), .PW(PW), .PN(PN), .IS_OUTPUT(IS_OUTPUT),
-              .POPCOUNT_LEVELS_PER_STAGE(3), .RAM_STYLE("auto")) dut (
+              .POPCOUNT_LEVELS_PER_STAGE(LPS), .RAM_STYLE("auto")) dut (
     .clk(clk), .rst(rst),
     .w_we(w_we), .w_lane(w_lane), .w_addr(w_addr), .w_data(w_data),
     .t_we(t_we), .t_lane(t_lane), .t_addr(t_addr), .t_data(t_data),
@@ -400,7 +401,7 @@ module bl_case import bnn_fcc_pkg::*; #(
 endmodule
 
 module tb_bnn_layer;
-  localparam int NC = 10;
+  localparam int NC = 14;
   logic clk = 1'b0;
   always #5 clk = ~clk;
 
@@ -417,6 +418,11 @@ module tb_bnn_layer;
   bl_case #(.F(1),   .N(1),   .PW(1),  .PN(1),  .IS_OUTPUT(0)) c7 (.clk(clk), .done(done[7]), .errors(errs[7]));
   bl_case #(.F(20),  .N(9),   .PW(64), .PN(9),  .IS_OUTPUT(1)) c8 (.clk(clk), .done(done[8]), .errors(errs[8]));
   bl_case #(.F(10),  .N(10),  .PW(3),  .PN(10), .IS_OUTPUT(1)) c9 (.clk(clk), .done(done[9]), .errors(errs[9]));
+  // non-default popcount pipelining (LPS = 1: deepest pipeline; LPS = 2)
+  bl_case #(.F(784), .N(256), .PW(66), .PN(32), .IS_OUTPUT(0), .LPS(1)) c10 (.clk(clk), .done(done[10]), .errors(errs[10]));
+  bl_case #(.F(256), .N(10),  .PW(66), .PN(1),  .IS_OUTPUT(1), .LPS(1)) c11 (.clk(clk), .done(done[11]), .errors(errs[11]));
+  bl_case #(.F(13),  .N(7),   .PW(3),  .PN(2),  .IS_OUTPUT(0), .LPS(1)) c12 (.clk(clk), .done(done[12]), .errors(errs[12]));
+  bl_case #(.F(256), .N(256), .PW(66), .PN(11), .IS_OUTPUT(0), .LPS(2)) c13 (.clk(clk), .done(done[13]), .errors(errs[13]));
 
   initial begin
     #20ms;
