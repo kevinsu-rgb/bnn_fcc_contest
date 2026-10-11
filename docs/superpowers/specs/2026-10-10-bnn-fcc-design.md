@@ -1,7 +1,7 @@
 # BNN FCC Design Spec — Layer-Pipelined, Arbitrary-Parallelism Implementation
 
 Date: 2026-10-10
-Status: Draft for review
+Status: Approved (revised 2026-10-10: xsim TB-loader finding, `tb_mnist`)
 Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully connected classifier, MNIST SFC topology 784→256→256→10) in SystemVerilog, verify with Vivado xsim, synthesize with Vivado via openflex.
 
 ---
@@ -30,6 +30,8 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 - TB message order: L0 W, L0 T, L1 W, L1 T, …, L(last) W. No threshold message for the output layer. Threshold headers carry `layer_inputs = 32` (to be ignored).
 - TB waits for `data_in_ready` after configuration before streaming images, and inserts one idle cycle between images (≈ 99 cycles/image at best on a 64-bit bus for 784 pixels).
 - No Questa locally; xsim (Vivado 2025.2) and Verilator 5.020 are available. openflex `sim` mode supports Questa only, so local simulation uses xsim scripts.
+- xsim needs `xelab --timescale 1ns/100ps` (the TB has a timescale; the package/interface/DUT do not) and an absolute `BASE_DIR` via `-generic_top`.
+- **xsim bug affecting the provided TB:** xsim does not re-create a block-local, uninitialized queue/dynamic array on each loop iteration (minimal repro: `for (...) begin bit q[$]; q.push_back(1); end` grows 1,2,3). In `BNN_FCC_Model::load_single_layer`, `bit bit_q[$]` therefore accumulates, so every neuron in a layer gets neuron 0's first F weights; the TB's MNIST mode fails `verify_model` under xsim ("SV Model says 0, Python says 7"). Initialized locals (`int popcount = 0;`) are fine, and `create_random` / `compute_reference` / `encode_configuration` are unaffected, so **custom-topology mode works correctly in xsim**. The TB file is not edited; MNIST is verified locally by a new test (§7.1 `tb_mnist`), and the user runs the contest MNIST check with Questa (`openflex/verify.sh`).
 
 ### 1.3 Design decisions made during brainstorming (confirmed in review)
 - Message boundary = header `total_bytes`; after the last payload byte the **remainder of that beat is dropped**. A TLAST arriving before the payload completes **truncates** the message (parser returns to header state). This is compatible with both the TB and the README interpretation.
@@ -223,15 +225,16 @@ All self-checking, randomized (seeded), xsim; each prints `SUCCESS` or `$error`/
 | `tb_neuron_processor` | Random weights/inputs/thresholds over 1..N passes; thresholds 0, F, F+1. |
 | `tb_bnn_layer` | TB imitates the config writer's layout; random F, N, PW, PN incl. non-divisors, PN=1, PN=N, PW>F, GROUPS=PASSES=1; input-bank gaps, slow output release; checks every output bit / popcount per image. |
 | `tb_argmax` | Ties within and across groups, partial groups, PN=1 and PN=N. |
+| `tb_mnist` | New top-level test: `class BNN_FCC_Model_XsimSafe extends bnn_fcc_tb_pkg::BNN_FCC_Model` overriding `load_from_file`/`load_single_layer` with an xsim-safe loader (explicit `bit_q.delete()` per line). Loads `python/model_data`, asserts the SV reference matches `python/test_vectors/expected_outputs.txt` for all 100 images, configures `bnn_fcc` (default SFC parallelism) with `encode_configuration`, streams all 100 MNIST images with 0.8 valid probability and random `data_out_ready`, and checks every DUT output against `expected_outputs.txt`. Reports latency/throughput like the provided TB. |
 | `tb_cfg_sequences` | Top-level `bnn_fcc` directed tests reusing `bnn_fcc_tb_pkg::BNN_FCC_Model` (imported, unmodified) to build messages: reordered messages; weights-only and thresholds-only reconfiguration between images; invalid headers (discarded, model unchanged); truncated message (TLAST early) blocks images until reloaded; reset mid-config and mid-image; per-message TLAST variant. |
 
 ### 7.2 System regression with the provided `bnn_fcc_tb`
-Array parameters cannot be overridden from the command line, so each configuration is a small **new** wrapper module in `sim/cfg/` that instantiates `bnn_fcc_tb` with parameter overrides (TB file unchanged apart from the default mapping in §3.2).
+Array parameters cannot be overridden from the command line, so each configuration is a small **new** wrapper module in `sim/cfg/` that instantiates `bnn_fcc_tb` with parameter overrides (TB file unchanged apart from the default mapping in §3.2). Because of the xsim loader bug (§1.2), every "SFC" row below runs the provided TB in **custom mode** with `CUSTOM_LAYERS = 4`, `CUSTOM_TOPOLOGY = '{784,256,256,10}` (random model and images, full SFC shape); the real trained MNIST model is covered by `tb_mnist`.
 
 | Config | Topology | PI / PN | Settings |
 |---|---|---|---|
-| `sfc_stress` | SFC (MNIST) | 66 / {32,11,1} | TOGGLE=1, 0.8/0.8, 50 images (contest pass criterion) |
-| `sfc_perf` | SFC | 66 / {32,11,1} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
+| `sfc_stress` | SFC shape (custom mode) | 66 / {32,11,1} | TOGGLE=1, 0.8/0.8, 50 images (contest stress settings) |
+| `sfc_perf` | SFC shape (custom mode) | 66 / {32,11,1} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
 | `sfc_pn1` | SFC | 66 / {1,1,1} | stress settings, 50 images (3072 cycles/image), TIMEOUT raised |
 | `sfc_alt` | SFC | 33 / {64,22,1} | stress settings |
 | `sfc_orig` | SFC | 8 / {8,8,10} (original TB values; WR_W = RD_W) | stress settings, 20 images, TIMEOUT raised |
@@ -242,7 +245,7 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 ### 7.3 Scripts (`sim/`, new)
 - `run_unit.sh` — compile and run all unit TBs with `xvlog/xelab/xsim`.
-- `run_regress.sh [cfg...]` — run §7.2 wrappers; pass iff the log contains `SUCCESS:` and no `Error:`/`Fatal:`/`Failure:` (same rule as `openflex/verify.sh`).
+- `run_regress.sh [cfg...]` — run §7.2 wrappers (`xelab --timescale 1ns/100ps`, absolute `BASE_DIR`); pass iff the log contains `SUCCESS:` and no `Error:`/`Fatal:`/`Failure:` (same rule as `openflex/verify.sh`).
 - `lint.sh` — `verilator --lint-only -Wall` over `rtl/`.
 - Vivado environment sourced from `/tools/AMD/2025.2/Vivado/settings64.sh`.
 - If xsim cannot handle a construct in the provided TB, it is reported to the user, not edited.
@@ -259,7 +262,7 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 ## 9. Definition of done
 1. All unit testbenches pass in xsim.
-2. All §7.2 regression configurations pass, including `sfc_stress` (contest criterion).
+2. All §7.2 regression configurations pass, including `sfc_stress`, and `tb_mnist` classifies all 100 MNIST images exactly as `expected_outputs.txt` under stress settings.
 3. Verilator lint clean (or each waiver justified in a comment).
 4. Vivado/openflex reports fmax ≥ 100 MHz on XCU250-2L.
 5. Results reported to the user: avg latency (cycles), cycles/image, fmax, resource utilization.
