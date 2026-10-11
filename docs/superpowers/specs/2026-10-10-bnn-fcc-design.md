@@ -15,7 +15,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 | U2 | Each layer supports any number of neuron processors (NPs) from 1 to N, e.g. layer 0 with 1 NP for 256 neurons. Non-divisor values must work. Same for parallel inputs vs fan-in. |
 | U3 | Optimize for **maximum throughput** (all layers run concurrently). |
 | U4 | Default (judged) parallelism: every layer ≤ 98 cycles/image (64-bit input bus is the bottleneck) with minimum XNOR lanes. |
-| U5 | Per-layer parallel inputs are **derived** (TB/slide convention): `P_W[0] = PARALLEL_INPUTS`, `P_W[i] = PARALLEL_NEURONS[i-1]`. |
+| U5 | Per-layer parallel inputs are **independent**: `PARALLEL_INPUTS` becomes an array `PARALLEL_INPUTS[TOTAL_LAYERS-1]` (one P_W per non-input layer), decoupled from the previous layer's P_N. Inter-layer buffers convert widths. (Revised from the derived TB convention after analysis: same lane count, 61 → 18 NPs, layers tunable independently, and few-NP layers no longer force narrow downstream inputs.) |
 | U6 | Configuration messages accepted in **any order**; **reconfiguration without reset** (weights-only / thresholds-only / per layer) between images. |
 | U7 | Protocol misuse handled by **safe-ignore**: no images accepted until fully configured; invalid config messages consumed and discarded without corrupting memory; image writes bounded. No new ports. |
 | U8 | Verification: new self-checking unit testbenches + xsim scripts in new folders. Provided TB files are not modified except the DUT parameter mapping defaults in `verification/bnn_fcc_tb.sv`. |
@@ -34,6 +34,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 ### 1.3 Design decisions made during brainstorming (confirmed in review)
 - Message boundary = header `total_bytes`; after the last payload byte the **remainder of that beat is dropped**. A TLAST arriving before the payload completes **truncates** the message (parser returns to header state). This is compatible with both the TB and the README interpretation.
 - Effective parallelism is clamped at elaboration (§3.1), so any positive parameter value is legal for any topology.
+- `PARALLEL_INPUTS` changes from a scalar to a per-layer array. `rtl/README.md` permits changing the parallelization parameters; the TB's DUT parameter mapping changes accordingly (permitted exception).
 
 ---
 
@@ -49,7 +50,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 ```
 
 - One `bnn_layer` instance per non-input layer, each with its own NPs and per-NP RAMs. All layers process different images concurrently.
-- Stages hand off images via two-bank ping-pong buffers. A layer starts the next image the cycle after issuing the last pass of the current one, provided its next input bank is full and its next output bank (or output credit) is free → no bubbles in steady state.
+- Stages hand off images via two-bank, width-converting ping-pong buffers (producer writes WR_W-bit chunks, consumer reads RD_W-bit words). A layer starts the next image the cycle after issuing the last pass of the current one, provided its next input bank is full and its next output bank (or output credit) is free → no bubbles in steady state.
 - Throughput = max(input-bus time, max layer time). Latency ≈ sum of stage times + pipeline depths.
 
 ### 2.1 File list (`rtl/`)
@@ -62,7 +63,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 | `cfg_layer_writer.sv` | Per-layer payload → weight words (via `bit_packer`) / clamped thresholds, with NP lane/address generation. |
 | `bit_packer.sv` | Generic: accepts 0..IN_W bits/cycle, emits OUT_W-bit words; flush pads with PAD. |
 | `input_packer.sv` | Image AXIS → binarized, TKEEP-compacted, bounded bits → `bit_packer` → layer-0 ping-pong. |
-| `pingpong_buf.sv` | Two-bank buffer with per-bank full flags. |
+| `pingpong_buf.sv` | Two-bank, width-converting buffer (WR_W-bit chunk writes, RD_W-bit word reads) with per-bank full flags. |
 | `bnn_layer.sv` | Layer engine: sequencer, per-NP RAMs, NP array, output write/emit. |
 | `neuron_processor.sv` | XNOR → popcount → accumulate → threshold compare. |
 | `popcount.sv` | Parameterized pipelined popcount. |
@@ -74,7 +75,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 ## 3. Parameters
 
 ### 3.1 Top-level parameters (`bnn_fcc`)
-Interface parameters are unchanged from the provided stub: `INPUT_DATA_WIDTH, INPUT_BUS_WIDTH, CONFIG_BUS_WIDTH, OUTPUT_DATA_WIDTH, OUTPUT_BUS_WIDTH, TOTAL_LAYERS, TOPOLOGY[TOTAL_LAYERS], PARALLEL_INPUTS, PARALLEL_NEURONS[TOTAL_LAYERS-1]`. The DUT keeps its existing generic defaults (`PARALLEL_INPUTS = 8`, `PARALLEL_NEURONS = '{default: 8}`).
+Interface parameters from the provided stub are kept: `INPUT_DATA_WIDTH, INPUT_BUS_WIDTH, CONFIG_BUS_WIDTH, OUTPUT_DATA_WIDTH, OUTPUT_BUS_WIDTH, TOTAL_LAYERS, TOPOLOGY[TOTAL_LAYERS], PARALLEL_NEURONS[TOTAL_LAYERS-1]`. `PARALLEL_INPUTS` changes from `int` to `int PARALLEL_INPUTS[TOTAL_LAYERS-1]`. Generic DUT defaults: `PARALLEL_INPUTS = '{default: 8}`, `PARALLEL_NEURONS = '{default: 8}`.
 
 Added implementation parameters (with defaults, all optional):
 | Parameter | Default | Meaning |
@@ -86,7 +87,7 @@ Added implementation parameters (with defaults, all optional):
 
 Derived localparams (L = `TOTAL_LAYERS-1` non-input layers; layer `l` has fan-in `F[l] = TOPOLOGY[l]`, neurons `N[l] = TOPOLOGY[l+1]`):
 - `PN[l]  = min(PARALLEL_NEURONS[l], N[l])` (must be ≥ 1)
-- `PW[0]  = min(PARALLEL_INPUTS, F[0])`, `PW[l] = PN[l-1]` for l ≥ 1
+- `PW[l]  = min(PARALLEL_INPUTS[l], F[l])` (must be ≥ 1)
 - `GROUPS[l] = ceil(N[l]/PN[l])`, `PASSES[l] = ceil(F[l]/PW[l])`
 - `ACC_W[l] = bits(F[l]+1)`, `THR_W[l] = bits(F[l]+2)`
 - Cycles per image in layer l = `GROUPS[l] * PASSES[l]`.
@@ -94,15 +95,15 @@ Derived localparams (L = `TOTAL_LAYERS-1` non-input layers; layer `l` has fan-in
 Elaboration-time assertions: all `PARALLEL_*` ≥ 1; `TOTAL_LAYERS ≥ 2`; all `TOPOLOGY[i] ≥ 1`; `INPUT_DATA_WIDTH % 8 == 0`; `INPUT_BUS_WIDTH % INPUT_DATA_WIDTH == 0`; `CONFIG_BUS_WIDTH % 8 == 0`; `bits(N[L-1]) ≤ OUTPUT_DATA_WIDTH`; `OUTPUT_DATA_WIDTH ≤ OUTPUT_BUS_WIDTH`; `F[l] < 2^16`, `N[l] < 2^16` (header field widths).
 
 ### 3.2 Default judged configuration (SFC)
-`PARALLEL_INPUTS = 49`, `PARALLEL_NEURONS = '{43, 16, 2}`:
+`PARALLEL_INPUTS = '{262, 86, 14}`, `PARALLEL_NEURONS = '{8, 8, 2}`:
 
-| Layer | F | N | PW | PN | PASSES | GROUPS | Cycles/image | XNOR lanes |
-|---|---|---|---|---|---|---|---|---|
-| 0 | 784 | 256 | 49 | 43 | 16 | 6 | 96 | 2107 |
-| 1 | 256 | 256 | 43 | 16 | 6 | 16 | 96 | 688 |
-| 2 | 256 | 10 | 16 | 2 | 16 | 5 | 80 | 32 |
+| Layer | F | N | PW | PN | PASSES | GROUPS | Cycles/image | XNOR lanes | Weight RAM per NP |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 784 | 256 | 262 | 8 | 3 | 32 | 96 | 2096 | 96 × 262 |
+| 1 | 256 | 256 | 86 | 8 | 3 | 32 | 96 | 688 | 96 × 86 |
+| 2 | 256 | 10 | 14 | 2 | 19 | 5 | 95 | 28 | 95 × 14 |
 
-Total 2827 XNOR lanes, 61 NPs — tied for the minimum lane count among all settings with every layer ≤ 97 cycles (exhaustive sweep), with the smallest maximum popcount width (49). Applied in: `verification/bnn_fcc_tb.sv` defaults (parameter mapping only) and `openflex/rtl/bnn_fcc_timing.sv` defaults.
+Total 2812 XNOR lanes, 18 NPs. Per layer, this is the minimum lane count achieving ≤ 97 cycles/image (exhaustive sweep), and among minimum-lane choices the one with the fewest NPs (fewer PN would need ≥ 12% more lanes). For comparison the derived convention's best was 2827 lanes / 61 NPs. Applied in: `verification/bnn_fcc_tb.sv` defaults (parameter mapping only) and `openflex/rtl/bnn_fcc_timing.sv` defaults.
 
 ---
 
@@ -155,7 +156,7 @@ Ports: config write ports (§4.3); input ping-pong read side (`in_full[1:0]`, `i
 - **Per-NP memories:** weight RAM (simple dual-port, `GROUPS*PASSES` × PW, `(* ram_style = RAM_STYLE *)`, 1-cycle registered read, write port from config) and threshold RAM (`GROUPS` × THR_W). Write enables decoded per lane.
 - **Read addressing:** weight address = `g*PASSES + p` maintained incrementally; input address = `p`; threshold address = `g`.
 - **Lane validity:** `valid_lane[k] = (g*PN + k < N)` (only the last group can be partial; computed from a registered "last group" flag and a constant mask).
-- **Hidden output:** on `last_pass`, `out_data[k] = valid_lane[k] & (acc_k >= thr_k)`; write to `out_addr = g` of `out_bank`; after the last group's write, `out_commit(out_bank)`. Invalid lanes are forced to 0, so the next layer's input padding is 0.
+- **Hidden output:** on `last_pass`, `out_data[k] = valid_lane[k] & (acc_k >= thr_k)`; write chunk `g` (PN bits) of `out_bank`; after the last group's write, `out_commit(out_bank)`. Invalid lanes are forced to 0. The next ping-pong buffer converts PN-bit chunks to the next layer's PW-bit words (§5.5).
 - **Output layer:** on `last_pass`, emit `res_counts = acc`, `res_mask = valid_lane`, `res_last = last_group`.
 - `busy` = an image is being issued or is in the data path.
 
@@ -166,7 +167,14 @@ Ports: config write ports (§4.3); input ping-pong read side (`in_full[1:0]`, `i
 Level 0: count each 6-bit chunk (LUT6-friendly) → binary adder tree over chunk counts; a register every `LEVELS_PER_STAGE` levels and at the output. Exposes `localparam LATENCY` (function of W and LEVELS_PER_STAGE) used by callers to align side-band signals.
 
 ### 5.4 Padding invariant
-Inputs beyond F are always 0 (image packer pads 0 and drops extra pixels; hidden layers force invalid lanes to 0). Weights beyond F are always 1 (writer pads 1). Either alone makes padded bits contribute 0 to the popcount; both are guaranteed.
+Inputs beyond F are always 0 (ping-pong bits at index ≥ NBITS read as constant 0; image packer pads 0 and drops extra pixels; hidden layers force invalid lanes to 0). Weights beyond F are always 1 (writer pads 1). Either alone makes padded bits contribute 0 to the popcount; both are guaranteed.
+
+### 5.5 `pingpong_buf #(NBITS, WR_W, RD_W)`
+- Two banks, each a register vector of NBITS bits (bits at index ≥ NBITS are not stored and read as 0). Registers, not RAM: SFC needs 2×784 + 2×256 + 2×256 FFs.
+- **Write side:** `wr_en, wr_bank, wr_idx, wr_data[WR_W]` writes chunk `wr_idx`, i.e. bits `[wr_idx*WR_W +: WR_W]`. Because chunk boundaries are multiples of WR_W, every stored bit `j` has a constant source lane `j % WR_W` and a constant chunk `j / WR_W`; the write is a per-bit enable decoded from `wr_idx` — no shifter. `commit(bank)` sets `full[bank]`.
+- **Read side:** `rd_bank, rd_idx` → `rd_data[RD_W]` (registered, 1-cycle latency) = bits `[rd_idx*RD_W +: RD_W]`; each output bit is a mux over `ceil(NBITS/RD_W)` constant positions. `release(bank)` clears `full[bank]`.
+- `full[1:0]` exported; producer and consumer each own their bank pointer.
+- Instances: layer-0 input (`NBITS=F[0], WR_W=RD_W=PW[0]`), between layer l and l+1 (`NBITS=N[l], WR_W=PN[l], RD_W=PW[l+1]`).
 
 ---
 
@@ -177,7 +185,7 @@ Inputs beyond F are always 0 (image packer pads 0 and drops extra pixels; hidden
 - Binarize: `bit = pixel[INPUT_DATA_WIDTH-1]` (MSB; exactly `>= 128` for 8-bit).
 - Compact valid bits to the LSBs in pixel order (prefix count over K lanes) → `(bits, count)`.
 - Bound: a pixel counter clips `count` so at most F[0] bits per image are packed; extras dropped.
-- `bit_packer #(IN_W=K, OUT_W=PW[0], PAD=0)`; each emitted word written to the layer-0 ping-pong bank at `word_addr++`. TLAST → flush, then commit the bank and toggle the bank pointer. An image ending early commits what it has (classification is undefined; no hang).
+- `bit_packer #(IN_W=K, OUT_W=PW[0], PAD=0)`; each emitted word written to the layer-0 ping-pong bank as chunk `wr_idx++`. TLAST → flush, then commit the bank and toggle the bank pointer. An image ending early commits what it has (classification is undefined; no hang).
 - `data_in_ready` (registered-state only): at an image boundary requires `configured & !cfg_busy & !full[wr_bank] & packer_ready`; within an image only `packer_ready`. Mid-image the image always completes even if a config header arrives.
 - `mid_image` output for idle detection.
 
@@ -196,7 +204,7 @@ Synchronous, active-high `rst` clears all control state: FSMs, counters, pointer
 
 ### 6.5 Expected SFC performance (default config)
 - Throughput: input-bus bound ≈ 99 cycles/image with the provided TB (98 beats + 1 idle cycle).
-- Latency (first accepted beat → output handshake): ≈ 98 + (96+~6) + (96+~6) + (80+~5) + ~5 ≈ 390–400 cycles at the defaults; exact value reported from simulation.
+- Latency (first accepted beat → output handshake): ≈ 98 + (96+~7) + (96+~6) + (95+~5) + ~5 ≈ 410 cycles at the defaults; exact value reported from simulation.
 - Config load: ~35.7k bytes → ~36k cycles.
 
 ---
@@ -211,8 +219,9 @@ All self-checking, randomized (seeded), xsim; each prints `SUCCESS` or `$error`/
 | `tb_popcount` | Random vectors vs `$countones`; W ∈ {1,5,6,7,8,16,43,49,64,131}; several LEVELS_PER_STAGE; latency matches `LATENCY`. |
 | `tb_bit_packer` | Random counts 0..IN_W, both PAD values, flush at/not-at word boundary, OUT_W ∈ {1,3,5,8,16,49}, IN_W ∈ {8}; queue model. |
 | `tb_cfg_byte_serializer` | Random TKEEP (incl. sparse, all-zero, all-zero+TLAST), valid gaps, `m_ready` backpressure, `drop_rest`. |
+| `tb_pingpong_buf` | Random NBITS/WR_W/RD_W incl. WR_W ≠ RD_W, non-divisors, WR_W or RD_W > NBITS; bits ≥ NBITS read 0; bank full/release sequencing. |
 | `tb_neuron_processor` | Random weights/inputs/thresholds over 1..N passes; thresholds 0, F, F+1. |
-| `tb_bnn_layer` | TB imitates the config writer's layout; random F, N, PW, PN incl. non-divisors, PN=1, PN=N, PW>F; input-bank gaps, slow output release; checks every output bit / popcount per image. |
+| `tb_bnn_layer` | TB imitates the config writer's layout; random F, N, PW, PN incl. non-divisors, PN=1, PN=N, PW>F, GROUPS=PASSES=1; input-bank gaps, slow output release; checks every output bit / popcount per image. |
 | `tb_argmax` | Ties within and across groups, partial groups, PN=1 and PN=N. |
 | `tb_cfg_sequences` | Top-level `bnn_fcc` directed tests reusing `bnn_fcc_tb_pkg::BNN_FCC_Model` (imported, unmodified) to build messages: reordered messages; weights-only and thresholds-only reconfiguration between images; invalid headers (discarded, model unchanged); truncated message (TLAST early) blocks images until reloaded; reset mid-config and mid-image; per-message TLAST variant. |
 
@@ -221,14 +230,15 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 | Config | Topology | PI / PN | Settings |
 |---|---|---|---|
-| `sfc_stress` | SFC (MNIST) | 49 / {43,16,2} | TOGGLE=1, 0.8/0.8, 50 images (contest pass criterion) |
-| `sfc_perf` | SFC | 49 / {43,16,2} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
-| `sfc_pn1` | SFC | 49 / {1,1,1} | stress settings, 5 images, TIMEOUT raised |
-| `sfc_pi8` | SFC | 8 / {8,8,10} (original TB values) | stress settings, 20 images |
-| `c_8888` | 8→8→8→8 | 49 / {43,16,2} (clamped) | stress settings |
-| `c_13753` | 13→7→5→3 | 3 / {2,4,3} | stress settings |
-| `c_100` | 100→37→19→10 | 7 / {5,3,4} | stress settings |
-| `c_tiny` | 5→1→3→2 | 1 / {1,1,1} | stress settings |
+| `sfc_stress` | SFC (MNIST) | {262,86,14} / {8,8,2} | TOGGLE=1, 0.8/0.8, 50 images (contest pass criterion) |
+| `sfc_perf` | SFC | {262,86,14} / {8,8,2} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
+| `sfc_pn1` | SFC | {262,86,14} / {1,1,1} | stress settings, 50 images (768 cycles/image) |
+| `sfc_eqw` | SFC | {49,43,16} / {43,16,2} (equal-width chunks, WR_W = RD_W) | stress settings |
+| `sfc_orig` | SFC | {8,8,8} / {8,8,10} (original TB values) | stress settings, 20 images, TIMEOUT raised |
+| `c_8888` | 8→8→8→8 | {262,86,14} / {8,8,2} (clamped; 1 cycle/image layers) | stress settings |
+| `c_13753` | 13→7→5→3 | {3,5,2} / {2,4,3} | stress settings |
+| `c_100` | 100→37→19→10 | {7,11,4} / {5,3,4} | stress settings |
+| `c_tiny` | 5→1→3→2 | {1,1,1} / {1,1,1} | stress settings |
 
 ### 7.3 Scripts (`sim/`, new)
 - `run_unit.sh` — compile and run all unit TBs with `xvlog/xelab/xsim`.
@@ -241,7 +251,7 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 ## 8. Synthesis
 - Add all `rtl/*.sv` files (package first) to the file lists of `openflex/bnn_fcc_timing.yml` and `openflex/bnn_fcc_verify.yml`.
-- Set `PARALLEL_INPUTS = 49`, `PARALLEL_NEURONS = '{43,16,2}` in `openflex/rtl/bnn_fcc_timing.sv`.
+- Set `PARALLEL_INPUTS[TOTAL_LAYERS-1] = '{262,86,14}`, `PARALLEL_NEURONS = '{8,8,2}` in `openflex/rtl/bnn_fcc_timing.sv` (type change of `PARALLEL_INPUTS` to an array is part of the implementation-specific parameter edit).
 - Run `openflex bnn_fcc_timing.yml -c bnn_fcc.csv` (openflex venv + Vivado 2025.2) on `XCU250-FIGD2104-2L-E`; report fmax and LUT/LUTRAM/FF/BRAM/DSP utilization.
 - `bnn_fcc_verify.yml` uses Questa (not available locally); the user runs `verify.sh` where Questa exists.
 
