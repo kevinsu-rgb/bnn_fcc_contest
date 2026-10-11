@@ -31,7 +31,9 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 - TB waits for `data_in_ready` after configuration before streaming images, and inserts one idle cycle between images (≈ 99 cycles/image at best on a 64-bit bus for 784 pixels).
 - No Questa locally; xsim (Vivado 2025.2) and Verilator 5.020 are available. openflex `sim` mode supports Questa only, so local simulation uses xsim scripts.
 - xsim needs `xelab --timescale 1ns/100ps` (the TB has a timescale; the package/interface/DUT do not) and an absolute `BASE_DIR` via `-generic_top`.
-- **xsim bug affecting the provided TB:** xsim does not re-create a block-local, uninitialized queue/dynamic array on each loop iteration (minimal repro: `for (...) begin bit q[$]; q.push_back(1); end` grows 1,2,3). In `BNN_FCC_Model::load_single_layer`, `bit bit_q[$]` therefore accumulates, so every neuron in a layer gets neuron 0's first F weights; the TB's MNIST mode fails `verify_model` under xsim ("SV Model says 0, Python says 7"). Initialized locals (`int popcount = 0;`) are fine, and `create_random` / `compute_reference` / `encode_configuration` are unaffected, so **custom-topology mode works correctly in xsim**. The TB file is not edited; MNIST is verified locally by a new test (§7.1 `tb_mnist`), and the user runs the contest MNIST check with Questa (`openflex/verify.sh`).
+- **xsim bug affecting the provided TB:** xsim does not re-create a block-local, uninitialized queue/dynamic array on each loop iteration (minimal repro: `for (...) begin bit q[$]; q.push_back(1); end` grows 1,2,3). In `BNN_FCC_Model::load_single_layer`, `bit bit_q[$]` therefore accumulates, so every neuron in a layer gets neuron 0's first F weights; the TB's MNIST mode fails `verify_model` under xsim ("SV Model says 0, Python says 7"). Initialized locals (`int popcount = 0;`) are fine.
+- **Two further xsim 2025.2 bugs (ruling R7, found during integration; this corrects an earlier claim that custom-topology mode works unmodified in xsim):** (a) `std::randomize()` on a dynamic array resizes it to 0, so in custom-topology mode `create_random` yields an all-zero model (empty weight rows) and the random images are empty (no beats sent); (b) `.sum()` on a real queue returns 0, so the TB's own `Avg latency` line prints 0.0. Every §7.2 regression therefore includes `sim/cfg/xsim_tb_fix.svh`, which at t=1 refills the TB's model weights, re-encodes the configuration stream and regenerates the images through the TB's public members (hierarchical access), and adds a latency monitor. The TB's own driver, backpressure, checker and `compute_reference` still run; the workaround cannot mask DUT bugs. The Questa flow does not need it.
+- The TB file is not edited; MNIST is verified locally by a new test (§7.1 `tb_mnist`), and the user runs the contest MNIST check with Questa (`openflex/verify.sh`, not available locally).
 
 ### 1.3 Design decisions made during brainstorming (confirmed in review)
 - Message boundary = header `total_bytes`; after the last payload byte the **remainder of that beat is dropped**. A TLAST arriving before the payload completes **truncates** the message (parser returns to header state). This is compatible with both the TB and the README interpretation.
@@ -119,11 +121,12 @@ Total 2904 XNOR lanes, 44 NPs. Selection (exhaustive sweep over the single P_W, 
 - A beat with TKEEP = 0 and TLAST = 1 emits a single item with `m_null = 1, m_beat_last = 1` (carries TLAST, no data). A beat with TKEEP = 0 and TLAST = 0 is consumed silently.
 - `drop_rest` asserted with a byte handshake discards the remaining bytes of the current beat (no further items from it, including any TLAST it carried — the parser has already completed that message).
 - Throughput: 1 byte/cycle (config speed is not judged).
+- **As built (deviation):** `s_ready = !full` (the holder must be empty), so a 64-bit beat takes 9 cycles instead of 8. Chosen for simplicity and a purely registered ready; config speed is not judged, so the 'will be empty after this handshake' refinement was not implemented.
 
 ### 4.2 `cfg_parser`
 States: `HEADER → (VALIDATE) → WAIT_IDLE → PAYLOAD → HEADER`, or `HEADER → DISCARD → HEADER`.
 
-- **HEADER:** shift in 16 bytes little-endian: `msg_type[7:0]`, `layer_id[15:8]`, `layer_inputs[31:16]`, `num_neurons[47:32]`, `bytes_per_neuron[63:48]`, `total_bytes[95:64]`, `reserved[127:96]`. A TLAST (incl. `m_null`) received before 16 bytes resets the header collection (partial header discarded).
+- **HEADER:** shift in 16 bytes little-endian: `msg_type[7:0]`, `layer_id[15:8]`, `layer_inputs[31:16]`, `num_neurons[47:32]`, `bytes_per_neuron[63:48]`, `total_bytes[95:64]`, `reserved[127:96]`. A TLAST (incl. `m_null`) received before 16 bytes resets the header collection (partial header discarded). **TLAST on the 16th header byte is also treated as truncation** (ruling R5): every valid message has `total_bytes >= 1`, so a header that ends the packet is truncated, and the header is discarded (otherwise the next packet's header would be consumed as payload).
 - **VALIDATE** (combinational on the completed header, against elaboration-time tables):
   - Weights (`msg_type == 0`): `layer_id < L`, `layer_inputs == F[l]`, `num_neurons == N[l]`, `bytes_per_neuron == ceil(F[l]/8)`, `total_bytes == N[l]*ceil(F[l]/8)`.
   - Thresholds (`msg_type == 1`): `layer_id < L-1` (hidden layers only), `num_neurons == N[l]`, `bytes_per_neuron == 4`, `total_bytes == 4*N[l]`. `layer_inputs` and `reserved` ignored.
@@ -190,6 +193,7 @@ Inputs beyond F are always 0 (ping-pong bits at index ≥ NBITS read as constant
 - `bit_packer #(IN_W=K, OUT_W=PW[0], PAD=0)`; each emitted word written to the layer-0 ping-pong bank as chunk `wr_idx++`. TLAST → flush, then commit the bank and toggle the bank pointer. An image ending early commits what it has (classification is undefined; no hang).
 - `data_in_ready` (registered-state only): at an image boundary requires `configured & !cfg_busy & !full[wr_bank] & packer_ready`; within an image only `packer_ready`. Mid-image the image always completes even if a config header arrives.
 - `mid_image` output for idle detection.
+- `accept_new` (from the top) additionally requires all `cfg_layer_writer`s idle (§6.3).
 
 ### 6.2 `argmax` and `axis_out`
 - **Group reduction:** pipelined compare tree over PN lanes (ignoring `res_mask == 0` lanes); ties → lower lane.
@@ -201,12 +205,14 @@ Inputs beyond F are always 0 (ping-pong bits at index ≥ NBITS read as constant
 ### 6.3 Idle detection and reconfiguration
 `pipeline_idle = !input_packer.mid_image & (all ping-pong full flags == 0) & (all bnn_layer.busy == 0) & !argmax.busy`. The output FIFO is excluded (results already computed do not depend on memories). While `cfg_busy`, no new image starts; in-flight images drain; the parser then writes.
 
+**Writer-idle admission gate (ruling R6):** the last weight words reach a layer's RAM 1..`ceil(8/PW)` cycles after `configured` rises (bit-packer latency inside `cfg_layer_writer`). Each `cfg_layer_writer` therefore has an `idle` output (packer empty, no flush pending, no write in flight; low from the cycle after `start` until the message's last write), and the top's `accept_new` (which gates `data_in_ready` at image boundaries) requires `configured & !cfg_busy` and all writers idle, so an image never reads weights still being written. Each writer latches `msg_type` at `start` so its tail flush does not depend on the parser's shared `msg_type` staying stable.
+
 ### 6.4 Reset
 Synchronous, active-high `rst` clears all control state: FSMs, counters, pointers, full flags, FIFO pointers, load flags, `cfg_busy`. RAM contents and pure datapath registers are not reset. After reset `configured = 0` ⇒ `data_in_ready = 0`.
 
 ### 6.5 Expected SFC performance (default config)
-- Throughput: input-bus bound ≈ 99 cycles/image with the provided TB (98 beats + 1 idle cycle).
-- Latency (first accepted beat → output handshake): ≈ 98 + (96+~6) + (96+~6) + (40+~6) + ~5 ≈ 355 cycles at the defaults; exact value reported from simulation.
+- Throughput: input-bus bound ≈ 99 cycles/image with the provided TB (98 beats + 1 idle cycle). **Measured (`sfc_perf`):** steady state 99 cycles/image (TB-bound); the TB reports 101.5 cycles/output because its average is (first beat → last output)/N and so includes pipeline fill: (99·99 + 349)/100 = 101.5 (985,221.7 outputs/s at 10 ns).
+- Latency (first accepted beat → output handshake): ≈ 98 + (96+~6) + (96+~6) + (40+~6) + ~5 ≈ 355 cycles at the defaults; measured 349 cycles (`xsim_tb_fix` monitor).
 - Config load: ~35.7k bytes → ~36k cycles.
 
 ---
@@ -226,10 +232,14 @@ All self-checking, randomized (seeded), xsim; each prints `SUCCESS` or `$error`/
 | `tb_bnn_layer` | TB imitates the config writer's layout; random F, N, PW, PN incl. non-divisors, PN=1, PN=N, PW>F, GROUPS=PASSES=1; input-bank gaps, slow output release; checks every output bit / popcount per image. |
 | `tb_argmax` | Ties within and across groups, partial groups, PN=1 and PN=N. |
 | `tb_mnist` | New top-level test: `class BNN_FCC_Model_XsimSafe extends bnn_fcc_tb_pkg::BNN_FCC_Model` overriding `load_from_file`/`load_single_layer` with an xsim-safe loader (explicit `bit_q.delete()` per line). Loads `python/model_data`, asserts the SV reference matches `python/test_vectors/expected_outputs.txt` for all 100 images, configures `bnn_fcc` (default SFC parallelism) with `encode_configuration`, streams all 100 MNIST images with 0.8 valid probability and random `data_out_ready`, and checks every DUT output against `expected_outputs.txt`. Reports latency/throughput like the provided TB. |
-| `tb_cfg_sequences` | Top-level `bnn_fcc` directed tests reusing `bnn_fcc_tb_pkg::BNN_FCC_Model` (imported, unmodified) to build messages: reordered messages; weights-only and thresholds-only reconfiguration between images; invalid headers (discarded, model unchanged); truncated message (TLAST early) blocks images until reloaded; reset mid-config and mid-image; per-message TLAST variant. |
+| `tb_cfg_parser` | Header decoding, validation table (valid and invalid headers), DISCARD, truncation (incl. TLAST on the 16th header byte, R5), WAIT_IDLE/`pipeline_idle` handshake, load flags and `configured`. |
+| `tb_cfg_layer_writer` | Weight/threshold payload to RAM-write layout (lane `n%PN`, address `group*PASSES+p`, bit `p*PW+k`, pad 1; clamped thresholds), PW=1 and PW>8 cases, abort/restart, `idle` timing. |
+| `tb_input_packer` | Pixel binarize/compaction, TKEEP holes, early/extra beats, bank commit/toggle, `accept_new` gating, PW0 > F0, back-to-back images. |
+| `tb_axis_out` | Output FIFO/register stage: ordering, credits (`count`), backpressure, constant `keep`/`last`, DATA_W/BUS_W combinations. |
+| `tb_cfg_sequences` | Top-level `bnn_fcc` directed tests reusing `bnn_fcc_tb_pkg::BNN_FCC_Model` (imported, unmodified) to build messages: reordered messages; weights-only and thresholds-only reconfiguration between images; invalid headers (discarded, model unchanged); truncated message (TLAST early) blocks images until reloaded; reset mid-config and mid-image; per-message TLAST variant; zero-gap images; long backpressure; reset with output pending. Run on a 4-layer and a 5-layer topology (`'{30,17,9,12,6}`, PI 5, PN `'{4,9,5,6}`; this is the >4-layer coverage, see R8 below) and on a third instance with `POPCOUNT_LEVELS_PER_STAGE=1`, `ARGMAX_LEVELS_PER_STAGE=1`, `OUT_FIFO_DEPTH=1`. `tb_bnn_layer` also instantiates LPS=1 and LPS=2 cases. |
 
 ### 7.2 System regression with the provided `bnn_fcc_tb`
-Array parameters cannot be overridden from the command line, so each configuration is a small **new** wrapper module in `sim/cfg/` that instantiates `bnn_fcc_tb` with parameter overrides (TB file unchanged apart from the default mapping in §3.2). Because of the xsim loader bug (§1.2), every "SFC" row below runs the provided TB in **custom mode** with `CUSTOM_LAYERS = 4`, `CUSTOM_TOPOLOGY = '{784,256,256,10}` (random model and images, full SFC shape); the real trained MNIST model is covered by `tb_mnist`.
+Array parameters cannot be overridden from the command line, so each configuration is a small **new** wrapper module in `sim/cfg/` that instantiates `bnn_fcc_tb` with parameter overrides (TB file unchanged apart from the default mapping in §3.2). Because of the xsim loader bug (§1.2), every "SFC" row below runs the provided TB in **custom mode** with `CUSTOM_LAYERS = 4`, `CUSTOM_TOPOLOGY = '{784,256,256,10}` (random model and images, full SFC shape); the real trained MNIST model is covered by `tb_mnist`. Every wrapper includes `sim/cfg/xsim_tb_fix.svh` (§1.2, ruling R7), without which the custom-mode runs would send an all-zero model and empty images.
 
 | Config | Topology | PI / PN | Settings |
 |---|---|---|---|
@@ -242,11 +252,18 @@ Array parameters cannot be overridden from the command line, so each configurati
 | `c_13753` | 13→7→5→3 | 3 / {2,4,3} | stress settings |
 | `c_100` | 100→37→19→10 | 7 / {5,3,4} | stress settings |
 | `c_tiny` | 5→1→3→2 | 1 / {1,1,1} | stress settings |
+| `c_100_bus` | 100→37→19→10 | 7 / {5,3,4} | stress settings, `CONFIG_BUS_WIDTH=32`, `INPUT_BUS_WIDTH=128` |
+| `c_13753_bus8` | 13→7→5→3 | 3 / {2,4,3} | stress settings, `CONFIG_BUS_WIDTH=8`, `INPUT_BUS_WIDTH=8` |
+
+**`c_5layer` was dropped (ruling R8):** the provided TB cannot elaborate `CUSTOM_LAYERS != 4` under xsim (`bnn_fcc_tb.sv:123` mixes array sizes, VRFC 10-9466). The 5-layer topology `'{30,17,9,12,6}`, PI 5, PN `'{4,9,5,6}` is instead covered by the `topo5` instance of `tb_cfg_sequences`.
+
+**Results (final):** unit TBs 13/13 PASS; provided-TB regression 11/11 PASS (`c_100`, `c_100_bus`, `c_13753`, `c_13753_bus8`, `c_8888`, `c_tiny`, `sfc_alt`, `sfc_orig`, `sfc_perf`, `sfc_pn1`, `sfc_stress`); `tb_mnist`: "MNIST: 100/100 match python" under stress.
 
 ### 7.3 Scripts (`sim/`, new)
 - `run_unit.sh` — compile and run all unit TBs with `xvlog/xelab/xsim`.
 - `run_regress.sh [cfg...]` — run §7.2 wrappers (`xelab --timescale 1ns/100ps`, absolute `BASE_DIR`); pass iff the log contains `SUCCESS:` and no `Error:`/`Fatal:`/`Failure:` (same rule as `openflex/verify.sh`).
 - `lint.sh` — `verilator --lint-only -Wall` over `rtl/`.
+- Set `VIVADO_SETTINGS` to override the Vivado `settings64.sh` path. See `sim/README.md`.
 - Vivado environment sourced from `/tools/AMD/2025.2/Vivado/settings64.sh`.
 - If xsim cannot handle a construct in the provided TB, it is reported to the user, not edited.
 
@@ -256,6 +273,7 @@ Array parameters cannot be overridden from the command line, so each configurati
 - Add all `rtl/*.sv` files (package first) to the file lists of `openflex/bnn_fcc_timing.yml` and `openflex/bnn_fcc_verify.yml`.
 - Set `PARALLEL_INPUTS = 66`, `PARALLEL_NEURONS = '{32,11,1}` in `openflex/rtl/bnn_fcc_timing.sv` (default values only).
 - Run `openflex bnn_fcc_timing.yml -c bnn_fcc.csv` (openflex venv + Vivado 2025.2) on `XCU250-FIGD2104-2L-E`; report fmax and LUT/LUTRAM/FF/BRAM/DSP utilization.
+- **Result (final RTL):** fMax 431.22 MHz; LUT 19965 (LUTAsLogic 12655, LUTAsMem 7310), REG 8971, CARRY8 186, BRAM 0, URAM 0, DSP 0.
 - `bnn_fcc_verify.yml` uses Questa (not available locally); the user runs `verify.sh` where Questa exists.
 
 ---

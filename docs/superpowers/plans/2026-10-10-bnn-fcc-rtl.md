@@ -408,12 +408,12 @@ Regression configs (all `USE_CUSTOM_TOPOLOGY = 1`; "stress" = `TOGGLE_DATA_OUT_R
 | `c_tiny` | 4 / `'{5,1,3,2}` | 1 / `'{1,1,1}` | stress, 200 images |
 | `c_100_bus` | 4 / `'{100,37,19,10}` | 7 / `'{5,3,4}` | stress, 200 images, `CONFIG_BUS_WIDTH=32`, `INPUT_BUS_WIDTH=128` |
 | `c_13753_bus8` | 4 / `'{13,7,5,3}` | 3 / `'{2,4,3}` | stress, 200 images, `CONFIG_BUS_WIDTH=8`, `INPUT_BUS_WIDTH=8` |
-| `c_5layer` | 5 / `'{30,17,9,12,6}` | 5 / `'{4,9,5,6}` | stress, 200 images |
+| ~~`c_5layer`~~ | ~~5 / `'{30,17,9,12,6}`~~ | ~~5 / `'{4,9,5,6}`~~ | **Dropped (ruling R8):** the provided TB cannot elaborate `CUSTOM_LAYERS != 4` under xsim (`bnn_fcc_tb.sv:123`); this topology is covered in `tb_cfg_sequences` (Task 13). |
 
 - [ ] **Step 1: Write the `sim/cfg/*.sv` wrappers and `sim/run_regress.sh [name ...]`** (default: all; compiles `RTL_FILES TBPKG_FILES verification/bnn_fcc_tb.sv sim/cfg/<name>.sv`, top `cfg_<name>`; exit code = failures; for `sfc_perf` also print the TB's `Avg latency (cycles)` and `Avg throughput (cycles/output)` lines).
 - [ ] **Step 2: Run against the stub, expect FAIL** — `sim/run_regress.sh c_8888` → `FAIL` (timeout: stub produces no outputs).
 - [ ] **Step 3: Edit `verification/bnn_fcc_tb.sv` lines 117–118 (defaults only) and implement `rtl/bnn_fcc.sv`.**
-- [ ] **Step 4: Run small configs first** — `sim/run_regress.sh c_tiny c_8888 c_13753 c_13753_bus8 c_100 c_100_bus c_5layer` → 7× `PASS`.
+- [ ] **Step 4: Run small configs first** — `sim/run_regress.sh c_tiny c_8888 c_13753 c_13753_bus8 c_100 c_100_bus` → 6× `PASS` (`c_5layer` dropped, R8).
 - [ ] **Step 5: Run SFC configs** — `sim/run_regress.sh sfc_stress sfc_pn1 sfc_alt sfc_orig sfc_perf` → 5× `PASS`; `sfc_perf` prints `Avg throughput (cycles/output)` ≤ 105.0 and `Avg latency (cycles)` between 330 and 400. If outside, stop and report numbers before changing anything.
 - [ ] **Step 6: Re-run all unit tests** — `sim/run_unit.sh` → all `PASS`.
 - [ ] **Step 7: Commit** — `git add rtl/bnn_fcc.sv verification/bnn_fcc_tb.sv sim/run_regress.sh sim/cfg && git commit -m "Integrate bnn_fcc top level; add provided-TB regression"`.
