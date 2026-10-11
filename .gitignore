@@ -1,1 +1,3 @@
 sim/build/
+openflex/*.csv
+openflex/build_vivado/

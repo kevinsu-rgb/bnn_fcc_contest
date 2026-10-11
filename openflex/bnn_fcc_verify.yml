@@ -11,6 +11,18 @@ files:
   #- ../rtl/bnn.sv
 
   # These are common to all projects.  
+  - ../rtl/bnn_fcc_pkg.sv
+  - ../rtl/argmax.sv
+  - ../rtl/axis_out.sv
+  - ../rtl/bit_packer.sv
+  - ../rtl/bnn_layer.sv
+  - ../rtl/cfg_byte_serializer.sv
+  - ../rtl/cfg_layer_writer.sv
+  - ../rtl/cfg_parser.sv
+  - ../rtl/input_packer.sv
+  - ../rtl/neuron_processor.sv
+  - ../rtl/pingpong_buf.sv
+  - ../rtl/popcount.sv
   - ../rtl/bnn_fcc.sv
   - ../verification/axi4_stream_if.sv
   - ../verification/bnn_fcc_tb_pkg.sv
