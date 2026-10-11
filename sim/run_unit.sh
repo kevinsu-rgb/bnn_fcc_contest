@@ -18,6 +18,6 @@ for tb in "${tbs[@]}"; do
   if grep -q 'BASE_DIR' "$file"; then
     extra=(-- -generic_top "BASE_DIR=$REPO/python")
   fi
-  run_xsim "$tb" "$tb" $RTL_FILES $TBPKG_FILES "$file" "${extra[@]}" || fails=$((fails+1))
+  run_xsim "$tb" "$tb" "${RTL_FILES[@]}" "${TBPKG_FILES[@]}" "$file" "${extra[@]}" || fails=$((fails+1))
 done
 exit $fails
