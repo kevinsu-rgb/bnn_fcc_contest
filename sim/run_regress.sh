@@ -17,7 +17,8 @@ for c in "${cfgs[@]}"; do
   run_xsim "$c" "cfg_$c" -i "$REPO/sim/cfg" $RTL_FILES $TBPKG_FILES \
     "$REPO/verification/bnn_fcc_tb.sv" "$REPO/sim/cfg/$c.sv" || fails=$((fails+1))
   if [ "$c" = "sfc_perf" ]; then
-    grep -E 'Avg latency \(cycles\)|Avg throughput \(cycles/output\)' "$REPO/sim/build/$c/run.log"
+    # the TB's own latency line is always 0.0 under xsim (real-queue sum()); use the xsim_tb_fix monitor's
+    grep -E 'xsim_tb_fix: Avg latency \(cycles\)|Avg throughput \(cycles/output\)' "$REPO/sim/build/$c/run.log"
   fi
 done
 exit $fails

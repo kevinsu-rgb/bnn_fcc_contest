@@ -117,6 +117,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
 
     // ---------------- image input
     logic                          accept_new_q;
+    logic [1:0]                    l0_full;     // layer-0 ping-pong full flags (driven in g_layer[0])
     logic                          ip_wr_en, ip_wr_bank, ip_commit_en, ip_commit_bank, ip_mid;
     logic [bits(cdiv(F0,PW0))-1:0] ip_wr_idx;
     logic [PW0-1:0]                ip_wr_data;
@@ -127,7 +128,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         .clk(clk), .rst(rst),
         .s_valid(data_in_valid), .s_ready(data_in_ready), .s_data(data_in_data),
         .s_keep(data_in_keep), .s_last(data_in_last),
-        .accept_new(accept_new_q), .buf_full(g_layer[0].in_full),
+        .accept_new(accept_new_q), .buf_full(l0_full),
         .wr_en(ip_wr_en), .wr_bank(ip_wr_bank), .wr_idx(ip_wr_idx), .wr_data(ip_wr_data),
         .commit_en(ip_commit_en), .commit_bank(ip_commit_bank), .mid_image(ip_mid)
     );
@@ -183,6 +184,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             assign pp_wr_data     = ip_wr_data;
             assign pp_commit_en   = ip_commit_en;
             assign pp_commit_bank = ip_commit_bank;
+            assign l0_full        = in_full;
         end else begin : g_src
             assign pp_wr_en       = g_layer[l-1].out_wr_en;
             assign pp_wr_bank     = g_layer[l-1].out_wr_bank;
