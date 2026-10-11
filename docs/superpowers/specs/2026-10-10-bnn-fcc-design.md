@@ -15,7 +15,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 | U2 | Each layer supports any number of neuron processors (NPs) from 1 to N, e.g. layer 0 with 1 NP for 256 neurons. Non-divisor values must work. Same for parallel inputs vs fan-in. |
 | U3 | Optimize for **maximum throughput** (all layers run concurrently). |
 | U4 | Default (judged) parallelism: every layer ≤ 98 cycles/image (64-bit input bus is the bottleneck) with minimum XNOR lanes. |
-| U5 | Per-layer parallel inputs are **independent**: `PARALLEL_INPUTS` becomes an array `PARALLEL_INPUTS[TOTAL_LAYERS-1]` (one P_W per non-input layer), decoupled from the previous layer's P_N. Inter-layer buffers convert widths. (Revised from the derived TB convention after analysis: same lane count, 61 → 18 NPs, layers tunable independently, and few-NP layers no longer force narrow downstream inputs.) |
+| U5 | `PARALLEL_INPUTS` stays a **single scalar** and is the parallel-input width P_W of **every** non-input layer (clamped to that layer's fan-in), independent of `PARALLEL_NEURONS`. Inter-layer buffers convert widths (producer writes PN[l]-bit chunks, consumer reads P_W-bit words). Few-NP layers therefore do not force narrow downstream inputs. |
 | U6 | Configuration messages accepted in **any order**; **reconfiguration without reset** (weights-only / thresholds-only / per layer) between images. |
 | U7 | Protocol misuse handled by **safe-ignore**: no images accepted until fully configured; invalid config messages consumed and discarded without corrupting memory; image writes bounded. No new ports. |
 | U8 | Verification: new self-checking unit testbenches + xsim scripts in new folders. Provided TB files are not modified except the DUT parameter mapping defaults in `verification/bnn_fcc_tb.sv`. |
@@ -34,7 +34,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 ### 1.3 Design decisions made during brainstorming (confirmed in review)
 - Message boundary = header `total_bytes`; after the last payload byte the **remainder of that beat is dropped**. A TLAST arriving before the payload completes **truncates** the message (parser returns to header state). This is compatible with both the TB and the README interpretation.
 - Effective parallelism is clamped at elaboration (§3.1), so any positive parameter value is legal for any topology.
-- `PARALLEL_INPUTS` changes from a scalar to a per-layer array. `rtl/README.md` permits changing the parallelization parameters; the TB's DUT parameter mapping changes accordingly (permitted exception).
+- `PARALLEL_INPUTS` keeps its scalar type but its meaning widens from "first hidden layer" to "all non-input layers". `rtl/README.md` permits changing the parallelization parameters; only default values change in the TB mapping and timing wrapper.
 
 ---
 
@@ -75,7 +75,7 @@ Scope: complete `rtl/bnn_fcc.sv` (AXI4-Stream binary neural network, fully conne
 ## 3. Parameters
 
 ### 3.1 Top-level parameters (`bnn_fcc`)
-Interface parameters from the provided stub are kept: `INPUT_DATA_WIDTH, INPUT_BUS_WIDTH, CONFIG_BUS_WIDTH, OUTPUT_DATA_WIDTH, OUTPUT_BUS_WIDTH, TOTAL_LAYERS, TOPOLOGY[TOTAL_LAYERS], PARALLEL_NEURONS[TOTAL_LAYERS-1]`. `PARALLEL_INPUTS` changes from `int` to `int PARALLEL_INPUTS[TOTAL_LAYERS-1]`. Generic DUT defaults: `PARALLEL_INPUTS = '{default: 8}`, `PARALLEL_NEURONS = '{default: 8}`.
+Interface parameters from the provided stub are kept: `INPUT_DATA_WIDTH, INPUT_BUS_WIDTH, CONFIG_BUS_WIDTH, OUTPUT_DATA_WIDTH, OUTPUT_BUS_WIDTH, TOTAL_LAYERS, TOPOLOGY[TOTAL_LAYERS], PARALLEL_NEURONS[TOTAL_LAYERS-1]`. `PARALLEL_INPUTS` (scalar `int`) is the P_W of every non-input layer. The DUT keeps its existing generic defaults (`PARALLEL_INPUTS = 8`, `PARALLEL_NEURONS = '{default: 8}`).
 
 Added implementation parameters (with defaults, all optional):
 | Parameter | Default | Meaning |
@@ -87,7 +87,7 @@ Added implementation parameters (with defaults, all optional):
 
 Derived localparams (L = `TOTAL_LAYERS-1` non-input layers; layer `l` has fan-in `F[l] = TOPOLOGY[l]`, neurons `N[l] = TOPOLOGY[l+1]`):
 - `PN[l]  = min(PARALLEL_NEURONS[l], N[l])` (must be ≥ 1)
-- `PW[l]  = min(PARALLEL_INPUTS[l], F[l])` (must be ≥ 1)
+- `PW[l]  = min(PARALLEL_INPUTS, F[l])` (must be ≥ 1)
 - `GROUPS[l] = ceil(N[l]/PN[l])`, `PASSES[l] = ceil(F[l]/PW[l])`
 - `ACC_W[l] = bits(F[l]+1)`, `THR_W[l] = bits(F[l]+2)`
 - Cycles per image in layer l = `GROUPS[l] * PASSES[l]`.
@@ -95,15 +95,15 @@ Derived localparams (L = `TOTAL_LAYERS-1` non-input layers; layer `l` has fan-in
 Elaboration-time assertions: all `PARALLEL_*` ≥ 1; `TOTAL_LAYERS ≥ 2`; all `TOPOLOGY[i] ≥ 1`; `INPUT_DATA_WIDTH % 8 == 0`; `INPUT_BUS_WIDTH % INPUT_DATA_WIDTH == 0`; `CONFIG_BUS_WIDTH % 8 == 0`; `bits(N[L-1]) ≤ OUTPUT_DATA_WIDTH`; `OUTPUT_DATA_WIDTH ≤ OUTPUT_BUS_WIDTH`; `F[l] < 2^16`, `N[l] < 2^16` (header field widths).
 
 ### 3.2 Default judged configuration (SFC)
-`PARALLEL_INPUTS = '{262, 86, 14}`, `PARALLEL_NEURONS = '{8, 8, 2}`:
+`PARALLEL_INPUTS = 66`, `PARALLEL_NEURONS = '{32, 11, 1}`:
 
 | Layer | F | N | PW | PN | PASSES | GROUPS | Cycles/image | XNOR lanes | Weight RAM per NP |
 |---|---|---|---|---|---|---|---|---|---|
-| 0 | 784 | 256 | 262 | 8 | 3 | 32 | 96 | 2096 | 96 × 262 |
-| 1 | 256 | 256 | 86 | 8 | 3 | 32 | 96 | 688 | 96 × 86 |
-| 2 | 256 | 10 | 14 | 2 | 19 | 5 | 95 | 28 | 95 × 14 |
+| 0 | 784 | 256 | 66 | 32 | 12 | 8 | 96 | 2112 | 96 × 66 |
+| 1 | 256 | 256 | 66 | 11 | 4 | 24 | 96 | 726 | 96 × 66 |
+| 2 | 256 | 10 | 66 | 1 | 4 | 10 | 40 | 66 | 40 × 66 |
 
-Total 2812 XNOR lanes, 18 NPs. Per layer, this is the minimum lane count achieving ≤ 97 cycles/image (exhaustive sweep), and among minimum-lane choices the one with the fewest NPs (fewer PN would need ≥ 12% more lanes). For comparison the derived convention's best was 2827 lanes / 61 NPs. Applied in: `verification/bnn_fcc_tb.sv` defaults (parameter mapping only) and `openflex/rtl/bnn_fcc_timing.sv` defaults.
+Total 2904 XNOR lanes, 44 NPs. Selection (exhaustive sweep over the single P_W, each layer ≤ 97 cycles/image, minimum PN per layer): the absolute minimum is PI=33, PN={64,22,1} at 2871 lanes but 87 NPs; PI=66 costs 1.1% more lanes for half the NPs (each NP carries an accumulator, threshold RAM and compare). Applied in: `verification/bnn_fcc_tb.sv` defaults (parameter mapping only) and `openflex/rtl/bnn_fcc_timing.sv` defaults.
 
 ---
 
@@ -174,7 +174,7 @@ Inputs beyond F are always 0 (ping-pong bits at index ≥ NBITS read as constant
 - **Write side:** `wr_en, wr_bank, wr_idx, wr_data[WR_W]` writes chunk `wr_idx`, i.e. bits `[wr_idx*WR_W +: WR_W]`. Because chunk boundaries are multiples of WR_W, every stored bit `j` has a constant source lane `j % WR_W` and a constant chunk `j / WR_W`; the write is a per-bit enable decoded from `wr_idx` — no shifter. `commit(bank)` sets `full[bank]`.
 - **Read side:** `rd_bank, rd_idx` → `rd_data[RD_W]` (registered, 1-cycle latency) = bits `[rd_idx*RD_W +: RD_W]`; each output bit is a mux over `ceil(NBITS/RD_W)` constant positions. `release(bank)` clears `full[bank]`.
 - `full[1:0]` exported; producer and consumer each own their bank pointer.
-- Instances: layer-0 input (`NBITS=F[0], WR_W=RD_W=PW[0]`), between layer l and l+1 (`NBITS=N[l], WR_W=PN[l], RD_W=PW[l+1]`).
+- Instances: layer-0 input (`NBITS=F[0], WR_W=RD_W=PW[0]`), between layer l and l+1 (`NBITS=N[l], WR_W=PN[l], RD_W=PW[l+1]`; WR_W = RD_W only when PN[l] equals the clamped P_W).
 
 ---
 
@@ -204,7 +204,7 @@ Synchronous, active-high `rst` clears all control state: FSMs, counters, pointer
 
 ### 6.5 Expected SFC performance (default config)
 - Throughput: input-bus bound ≈ 99 cycles/image with the provided TB (98 beats + 1 idle cycle).
-- Latency (first accepted beat → output handshake): ≈ 98 + (96+~7) + (96+~6) + (95+~5) + ~5 ≈ 410 cycles at the defaults; exact value reported from simulation.
+- Latency (first accepted beat → output handshake): ≈ 98 + (96+~6) + (96+~6) + (40+~6) + ~5 ≈ 355 cycles at the defaults; exact value reported from simulation.
 - Config load: ~35.7k bytes → ~36k cycles.
 
 ---
@@ -230,15 +230,15 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 | Config | Topology | PI / PN | Settings |
 |---|---|---|---|
-| `sfc_stress` | SFC (MNIST) | {262,86,14} / {8,8,2} | TOGGLE=1, 0.8/0.8, 50 images (contest pass criterion) |
-| `sfc_perf` | SFC | {262,86,14} / {8,8,2} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
-| `sfc_pn1` | SFC | {262,86,14} / {1,1,1} | stress settings, 50 images (768 cycles/image) |
-| `sfc_eqw` | SFC | {49,43,16} / {43,16,2} (equal-width chunks, WR_W = RD_W) | stress settings |
-| `sfc_orig` | SFC | {8,8,8} / {8,8,10} (original TB values) | stress settings, 20 images, TIMEOUT raised |
-| `c_8888` | 8→8→8→8 | {262,86,14} / {8,8,2} (clamped; 1 cycle/image layers) | stress settings |
-| `c_13753` | 13→7→5→3 | {3,5,2} / {2,4,3} | stress settings |
-| `c_100` | 100→37→19→10 | {7,11,4} / {5,3,4} | stress settings |
-| `c_tiny` | 5→1→3→2 | {1,1,1} / {1,1,1} | stress settings |
+| `sfc_stress` | SFC (MNIST) | 66 / {32,11,1} | TOGGLE=1, 0.8/0.8, 50 images (contest pass criterion) |
+| `sfc_perf` | SFC | 66 / {32,11,1} | TOGGLE=0, 1.0/1.0, 100 images (records latency/throughput) |
+| `sfc_pn1` | SFC | 66 / {1,1,1} | stress settings, 50 images (3072 cycles/image), TIMEOUT raised |
+| `sfc_alt` | SFC | 33 / {64,22,1} | stress settings |
+| `sfc_orig` | SFC | 8 / {8,8,10} (original TB values; WR_W = RD_W) | stress settings, 20 images, TIMEOUT raised |
+| `c_8888` | 8→8→8→8 | 66 / {32,11,1} (clamped; 1-cycle/image layers) | stress settings |
+| `c_13753` | 13→7→5→3 | 3 / {2,4,3} | stress settings |
+| `c_100` | 100→37→19→10 | 7 / {5,3,4} | stress settings |
+| `c_tiny` | 5→1→3→2 | 1 / {1,1,1} | stress settings |
 
 ### 7.3 Scripts (`sim/`, new)
 - `run_unit.sh` — compile and run all unit TBs with `xvlog/xelab/xsim`.
@@ -251,7 +251,7 @@ Array parameters cannot be overridden from the command line, so each configurati
 
 ## 8. Synthesis
 - Add all `rtl/*.sv` files (package first) to the file lists of `openflex/bnn_fcc_timing.yml` and `openflex/bnn_fcc_verify.yml`.
-- Set `PARALLEL_INPUTS[TOTAL_LAYERS-1] = '{262,86,14}`, `PARALLEL_NEURONS = '{8,8,2}` in `openflex/rtl/bnn_fcc_timing.sv` (type change of `PARALLEL_INPUTS` to an array is part of the implementation-specific parameter edit).
+- Set `PARALLEL_INPUTS = 66`, `PARALLEL_NEURONS = '{32,11,1}` in `openflex/rtl/bnn_fcc_timing.sv` (default values only).
 - Run `openflex bnn_fcc_timing.yml -c bnn_fcc.csv` (openflex venv + Vivado 2025.2) on `XCU250-FIGD2104-2L-E`; report fmax and LUT/LUTRAM/FF/BRAM/DSP utilization.
 - `bnn_fcc_verify.yml` uses Questa (not available locally); the user runs `verify.sh` where Questa exists.
 
