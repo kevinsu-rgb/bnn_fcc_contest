@@ -82,23 +82,29 @@ report_utilization    -file [file join $outdir utilization.rpt]
 report_timing_summary -file [file join $outdir timing_summary.rpt] -max_paths 10
 
 # ---- slack extraction ------------------------------------------------------
+# Any value that cannot be determined stays "NA" and makes the probe FAIL, so a
+# missing path / table can never be mistaken for a pass.
 proc first_slack {args} {
   set p [get_timing_paths {*}$args -max_paths 1]
-  if {[llength $p] == 0} { return "inf" }
-  return [get_property SLACK $p]
+  if {[llength $p] == 0} { return "NA" }
+  set v [get_property SLACK $p]
+  if {$v eq ""} { return "NA" }
+  return $v
 }
 set wns [first_slack -setup]
 set whs [first_slack -hold]
 
 # WPWS: parse the "Design Timing Summary" table of the timing summary. Its data
 # row starts with 10 numbers: WNS TNS #fail #total WHS THS #fail #total WPWS TPWS (more follow).
-set wpws "inf"
+# The scan stops at the first blank line after the header (end of the table).
+set wpws "NA"
 set summary [report_timing_summary -return_string -max_paths 1]
 set lines [split $summary "\n"]
 for {set i 0} {$i < [llength $lines]} {incr i} {
   if {[string first "WPWS(ns)" [lindex $lines $i]] >= 0} {
     for {set j [expr {$i + 1}]} {$j < [llength $lines]} {incr j} {
       set vals [regexp -all -inline {\S+} [lindex $lines $j]]
+      if {[llength $vals] == 0} break
       if {[llength $vals] >= 10 && [string is double -strict [lindex $vals 0]]} {
         set wpws [lindex $vals 8]
         break
@@ -108,9 +114,10 @@ for {set i 0} {$i < [llength $lines]} {incr i} {
   }
 }
 
+# PASS iff all three are real numbers >= 0.
 set pass 1
 foreach v [list $wns $whs $wpws] {
-  if {$v ne "inf" && ![string is double -strict $v]} { set pass 0 } elseif {$v ne "inf" && $v < 0} { set pass 0 }
+  if {![string is double -strict $v] || $v < 0} { set pass 0 }
 }
 puts [format "PROBE %s %s WNS=%s WHS=%s WPWS=%s RESULT=%s" $top $tag $wns $whs $wpws [expr {$pass ? "PASS" : "FAIL"}]]
-exit 0
+exit [expr {$pass ? 0 : 1}]
