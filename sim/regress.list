@@ -9,3 +9,16 @@ ram bram_sp_l2 ram_rw_test
 ram bram_sdp_l1 ram_rw_test
 ram uram_sdp_l3 ram_rw_test
 ram tiny ram_rw_test
+popcount w1 popcount_random_test
+popcount w3 popcount_random_test
+popcount w7 popcount_random_test
+popcount w8 popcount_random_test
+popcount w16 popcount_random_test
+popcount w64 popcount_random_test
+popcount w128 popcount_random_test
+popcount w784 popcount_random_test
+bcast n1 bcast_random_test
+bcast n16 bcast_random_test
+bcast n17 bcast_random_test
+bcast n128 bcast_random_test
+bcast n300 bcast_random_test
