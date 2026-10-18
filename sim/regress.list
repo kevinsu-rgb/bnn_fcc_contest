@@ -22,3 +22,8 @@ bcast n16 bcast_random_test
 bcast n17 bcast_random_test
 bcast n128 bcast_random_test
 bcast n300 bcast_random_test
+np pw16 np_random_test
+np pw128 np_random_test
+np pw8 np_random_test
+np pw1 np_random_test
+np pw5 np_random_test
