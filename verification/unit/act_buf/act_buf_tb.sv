@@ -23,6 +23,7 @@ module act_buf_tb;
       .wr_data     (vif.wr_data),
       .wr_commit   (vif.wr_commit),
       .rd_full     (vif.rd_full),
+      .rd_full_next(vif.rd_full_next),
       .rd_en       (vif.rd_en),
       .rd_addr     (vif.rd_addr),
       .rd_data     (vif.rd_data),

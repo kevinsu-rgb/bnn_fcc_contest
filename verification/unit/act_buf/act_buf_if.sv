@@ -13,6 +13,7 @@ interface act_buf_if #(
   logic [WIDTH-1:0] wr_data;
   logic             wr_commit;
   logic             rd_full;
+  logic             rd_full_next;
   logic             rd_en;
   logic [   AW-1:0] rd_addr;
   logic [WIDTH-1:0] rd_data;

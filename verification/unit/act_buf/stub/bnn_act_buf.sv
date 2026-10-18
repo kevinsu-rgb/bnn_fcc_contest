@@ -14,6 +14,7 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
     input  logic [    WIDTH-1:0]     wr_data,
     input  logic                     wr_commit,
     output logic                     rd_full,
+    output logic                     rd_full_next,
     input  logic                     rd_en,
     input  logic [addr_w(DEPTH)-1:0] rd_addr,
     output logic [    WIDTH-1:0]     rd_data,
@@ -22,6 +23,7 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
 );
   assign wr_can_claim = '0;
   assign rd_full      = '0;
+  assign rd_full_next = '0;
   assign rd_data      = '0;
   assign idle         = '0;
 endmodule

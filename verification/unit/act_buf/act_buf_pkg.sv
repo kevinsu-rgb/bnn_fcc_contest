@@ -5,6 +5,7 @@
 //   wr_can_claim = slot[claim_ptr] EMPTY      wr_claim  : slot[claim_ptr] -> CLAIMED
 //   wr_en/commit apply to slot[write_ptr]     wr_commit : slot[write_ptr] -> FULL
 //   rd_full      = slot[read_ptr]  FULL       rd_release: slot[read_ptr]  -> EMPTY
+//   rd_full_next = slot[read_ptr+1] FULL (look-ahead, ruling R12)
 //   idle         = no slot FULL
 // All three status outputs are registered: an event sampled by the DUT at
 // clock edge k is visible in the values sampled at edge k+1. rd_data
@@ -99,6 +100,9 @@ package act_buf_pkg;
     function bit exp_full();
       return st[rp] == SL_FULL;
     endfunction
+    function bit exp_full_next();
+      return st[1 - rp] == SL_FULL;
+    endfunction
     function bit exp_idle();
       return !(st[0] == SL_FULL || st[1] == SL_FULL);
     endfunction
@@ -180,6 +184,7 @@ package act_buf_pkg;
     ab_in_t             i;
     logic               wr_can_claim;
     logic               rd_full;
+    logic               rd_full_next;
     logic               idle;
     logic [AB_WIDTH-1:0] rd_data;
     function new(string name = "actbuf_txn");
@@ -606,6 +611,7 @@ package act_buf_pkg;
         t.i.rel        = (vif.rd_release === 1'b1);
         t.wr_can_claim = vif.wr_can_claim;
         t.rd_full      = vif.rd_full;
+        t.rd_full_next = vif.rd_full_next;
         t.idle         = vif.idle;
         t.rd_data      = vif.rd_data;
         ap.write(t);
@@ -652,6 +658,8 @@ package act_buf_pkg;
     int          zb_seen;
     int          cw_seen;   // commits coinciding with a write
     bit          prev_rd_rel;
+    bit          zb_strict;     // set by the zero-bubble test: rd_full_next must have been 1
+    logic        prev_rel_fn;   // rd_full_next sampled in the last release+read cycle
 
     function new(string name, uvm_component parent);
       super.new(name, parent);
@@ -661,7 +669,7 @@ package act_buf_pkg;
 
     function void write(actbuf_txn t);
       pend_t  p, e;
-      bit     ec, ef, ei;
+      bit     ec, ef, ei, efn;
       string  v;
 
       // rd_data now belongs to the read issued AB_LAT cycles ago.
@@ -683,8 +691,10 @@ package act_buf_pkg;
       ec = m.exp_can_claim();
       ef = m.exp_full();
       ei = m.exp_idle();
+      efn = m.exp_full_next();
       check_eq("wr_can_claim", t.wr_can_claim, ec);
       check_eq("rd_full", t.rd_full, ef);
+      check_eq("rd_full_next", t.rd_full_next, efn);
       check_eq("idle", t.idle, ei);
 
       // Read issued this edge, data snapshot from the pre-edge state.
@@ -698,8 +708,16 @@ package act_buf_pkg;
       pipe.push_back(p);
 
       if (t.i.commit && t.i.wr_en) cw_seen++;
-      if (prev_rd_rel && t.i.rd_en) zb_seen++;
+      // Back-to-back transition. In the zero-bubble test the consumer only releases
+      // on its last read once the next slot is FULL, i.e. it relies on rd_full_next
+      // having been 1 in the release cycle (4-state compare against 1). Not a
+      // universal rule: a commit may land in the release cycle itself.
+      if (prev_rd_rel && t.i.rd_en) begin
+        zb_seen++;
+        if (zb_strict) check_eq("rd_full_next in release cycle of back-to-back transition", prev_rel_fn, 1'b1);
+      end
       prev_rd_rel = t.i.rd_en && t.i.rel;
+      prev_rel_fn = t.rd_full_next;
 
       v = m.violation(t.i);
       if (v == "") m.step(t.i);
@@ -849,6 +867,7 @@ package act_buf_pkg;
         bnn_watchdog("actbuf_zero_bubble_test", b);
       join_none
       seq = actbuf_seq::type_id::create("seq");
+      env.scb.zb_strict = 1'b1;
       seq.zb_mode  = 1'b1;
       seq.n_images = 60;
       seq.start(env.sqr);
