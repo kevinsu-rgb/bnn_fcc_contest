@@ -6,6 +6,8 @@
 //   wr_en/commit : target slot[wp] (the oldest CLAIMED slot)
 //                                               wr_commit  : slot[wp] -> FULL, wp toggles
 //   rd_full      : slot[rp] is FULL             rd_release : slot[rp] -> EMPTY, rp toggles
+//   rd_full_next : the other slot (read pointer + 1) is FULL, so a consumer releasing slot A
+//                  on its last read already knows whether slot B can be read next cycle
 //   idle         : no slot FULL
 // Two claims may be outstanding (slot 1 claimed while slot 0 is still CLAIMED).
 //
@@ -14,7 +16,7 @@
 //     committed: the write address uses the pre-commit wp) or come any cycle later.
 //   * wr_en never occurs in the cycle of the claim of its own slot.
 //   * rd_release may coincide with the image's last rd_en (the read uses the pre-release rp).
-//   * wr_can_claim / rd_full / idle are registered: an event sampled at edge k is visible from
+//   * wr_can_claim / rd_full / rd_full_next / idle are registered: an event sampled at edge k is visible from
 //     edge k+1. Reset (synchronous, active high) clears control state only; storage has none.
 //   * rd_data appears READ_LATENCY cycles after rd_en / rd_addr.
 //
@@ -37,6 +39,7 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
     input  logic [    WIDTH-1:0]     wr_data,
     input  logic                     wr_commit,
     output logic                     rd_full,
+    output logic                     rd_full_next,
     // rd_en is part of the interface contract; the read port is free-running (reads are only
     // observed when the consumer samples rd_data), so it has no function here.
     /* verilator lint_off UNUSEDSIGNAL */
@@ -89,6 +92,7 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
       rp           <= 1'b0;
       wr_can_claim <= 1'b1;
       rd_full      <= 1'b0;
+      rd_full_next <= 1'b0;
       idle         <= 1'b1;
     end else begin
       claimed      <= claimed_n;
@@ -98,6 +102,7 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
       rp           <= rp_n;
       wr_can_claim <= !(claimed_n[cp_n] || full_n[cp_n]);
       rd_full      <= full_n[rp_n];
+      rd_full_next <= full_n[~rp_n];
       idle         <= !(full_n[0] || full_n[1]);
     end
   end
