@@ -103,35 +103,61 @@ module bnn_act_buf import bnn_fcc_pkg::*; #(
   end
 
   // ---------------------------------------------------------------------------------------
+  // Replicated slot selects: wp / rp stay as the control copy; the data path (write decode,
+  // read mux, RAM slot address bit) is driven from NC copies, each serving one SLICE-bit slice
+  // of the word (fanout ~SLICE), all loaded with the same next value (behavior unchanged).
+  // ---------------------------------------------------------------------------------------
+  localparam int SLICE = 16;
+  localparam int NC = ceil_div(WIDTH, SLICE);
+
+  (* keep = "true", shreg_extract = "no" *) logic [NC-1:0] wp_c;
+  (* keep = "true", shreg_extract = "no" *) logic [NC-1:0] rp_c;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      wp_c <= '0;
+      rp_c <= '0;
+    end else begin
+      wp_c <= {NC{wp_n}};
+      rp_c <= {NC{rp_n}};
+    end
+  end
+
+  // ---------------------------------------------------------------------------------------
   // Storage; the write slot is the pre-commit wp, the read slot the pre-release rp.
   // ---------------------------------------------------------------------------------------
-  if (2 * DEPTH <= 4) begin : g_regs
-    // Word index space 2**AW per slot (DEPTH=1 still has a 1-bit address).
-    logic [WIDTH-1:0] mem[2][2**AW];
-    (* shreg_extract = "no" *) logic [WIDTH-1:0] rd_pipe[READ_LATENCY];
+  for (genvar c = 0; c < NC; c++) begin : g_slice
+    localparam int LO = c * SLICE;
+    localparam int SW = min_int(SLICE, WIDTH - LO);
 
-    always_ff @(posedge clk) begin
-      if (wr_en) mem[wp][wr_addr] <= wr_data;
-      rd_pipe[0] <= mem[rp][rd_addr];
-      for (int i = 1; i < READ_LATENCY; i++) rd_pipe[i] <= rd_pipe[i-1];
+    if (2 * DEPTH <= 4) begin : g_regs
+      // Word index space 2**AW per slot (DEPTH=1 still has a 1-bit address).
+      logic [SW-1:0] mem[2][2**AW];
+      (* shreg_extract = "no" *) logic [SW-1:0] rd_pipe[READ_LATENCY];
+
+      always_ff @(posedge clk) begin
+        if (wr_en) mem[wp_c[c]][wr_addr] <= wr_data[LO+:SW];
+        rd_pipe[0] <= mem[rp_c[c]][rd_addr];
+        for (int i = 1; i < READ_LATENCY; i++) rd_pipe[i] <= rd_pipe[i-1];
+      end
+
+      assign rd_data[LO+:SW] = rd_pipe[READ_LATENCY-1];
+    end else begin : g_ram
+      bnn_ram #(
+          .WIDTH       (SW),
+          .DEPTH       (2 ** (AW + 1)),
+          .RAM_STYLE   (RAM_STYLE),
+          .READ_LATENCY(READ_LATENCY),
+          .PORTS       ("SDP")
+      ) u_ram (
+          .clk    (clk),
+          .we     (wr_en),
+          .wr_addr({wp_c[c], wr_addr}),
+          .wr_data(wr_data[LO+:SW]),
+          .rd_addr({rp_c[c], rd_addr}),
+          .rd_data(rd_data[LO+:SW])
+      );
     end
-
-    assign rd_data = rd_pipe[READ_LATENCY-1];
-  end else begin : g_ram
-    bnn_ram #(
-        .WIDTH       (WIDTH),
-        .DEPTH       (2 ** (AW + 1)),
-        .RAM_STYLE   (RAM_STYLE),
-        .READ_LATENCY(READ_LATENCY),
-        .PORTS       ("SDP")
-    ) u_ram (
-        .clk    (clk),
-        .we     (wr_en),
-        .wr_addr({wp, wr_addr}),
-        .wr_data(wr_data),
-        .rd_addr({rp, rd_addr}),
-        .rd_data(rd_data)
-    );
   end
 
 endmodule
