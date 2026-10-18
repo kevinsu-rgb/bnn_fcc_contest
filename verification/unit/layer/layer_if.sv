@@ -29,6 +29,7 @@ interface layer_if #(
 
   // ---- DUT input side (upstream act_buf read side <-> DUT)
   logic           in_full;
+  logic           in_full_next;
   logic           in_rd_en;
   logic [CAW-1:0] in_rd_addr;
   logic [ PW-1:0] in_rd_data;

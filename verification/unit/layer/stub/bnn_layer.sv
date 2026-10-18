@@ -24,6 +24,7 @@ module bnn_layer import bnn_fcc_pkg::*; #(
     input  logic [      WB_ADDR_W-1:0] cfg_wr_addr,
     input  logic [      WB_DATA_W-1:0] cfg_wr_data,
     input  logic                       in_full,
+    input  logic                       in_full_next,
     output logic                       in_rd_en,
     output logic [      addr_w(C)-1:0] in_rd_addr,
     input  logic [             PW-1:0] in_rd_data,

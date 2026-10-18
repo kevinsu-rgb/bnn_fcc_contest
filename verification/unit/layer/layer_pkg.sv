@@ -41,12 +41,14 @@
 //                   * output: one res_valid per group in group order, res_mask,
 //                     res_counts of the valid neurons, res_last on group G-1;
 //                     out_wr_* / out_commit always 0
-//                   * in_release once per image; control outputs never X/Z
+//                   * in_release once per image, in the same cycle as a read (R13:
+//                     it coincides with the last read); control outputs never X/Z
 //                   * idle == 0 while an image is in flight (claim+6 .. finish-1),
 //                     idle == 1 after 16 quiet cycles
 //                   * back-to-back: consecutive out_claim exactly C*G cycles apart
-//                 The input-side read pattern (in_rd_en / in_rd_addr) is not
-//                 checked directly; only results are.
+//                 Otherwise the input-side read pattern (in_rd_en / in_rd_addr) is
+//                 not checked directly; only results are. in_full_next (R12) is
+//                 the upstream act_buf's rd_full_next.
 package layer_pkg;
   import uvm_pkg::*;
   `include "uvm_macros.svh"
@@ -727,6 +729,7 @@ package layer_pkg;
     logic                 cfg_wr_kind;
     logic [     L_DW-1:0] cfg_wr_data;
     logic                 in_full;
+    logic                 in_full_next;
     logic                 in_rd_en;
     logic                 in_release;
     logic                 out_can_claim;
@@ -777,6 +780,7 @@ package layer_pkg;
         t.cfg_wr_kind   = vif.cfg_wr_kind;
         t.cfg_wr_data   = vif.cfg_wr_data;
         t.in_full       = vif.in_full;
+        t.in_full_next  = vif.in_full_next;
         t.in_rd_en      = vif.in_rd_en;
         t.in_release    = vif.in_release;
         t.out_can_claim = vif.out_can_claim;
@@ -1066,6 +1070,8 @@ package layer_pkg;
 
       // ---- input release
       if (t.in_release === 1'b1) begin
+        // R13: in_release coincides with the image's last read
+        if (t.in_rd_en !== 1'b1) bad($sformatf("in_release at cycle %0d without a read in the same cycle", t.cyc));
         n_releases++;
         if (n_releases > n_claims) bad($sformatf("in_release at cycle %0d without a started image", t.cyc));
       end
