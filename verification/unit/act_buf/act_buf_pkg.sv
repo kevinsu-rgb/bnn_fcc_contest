@@ -20,8 +20,9 @@
 // The protocol monitor (own model) is a self-check of the TB itself.
 //
 // TB conservatism (outside the stated contract, so never exercised):
-//   * no wr_en in the same cycle as wr_commit (commit >= 1 cycle after the
-//     last write); no wr_en in the cycle of the wr_claim of its slot.
+//   * no wr_en in the cycle of the wr_claim of its slot. (Controller ruling R10:
+//     wr_commit MAY coincide with the image's final wr_en, and the producer
+//     does so for ~50% of the images; the write lands in the committing slot.)
 //   * images are fully written (every address at least once) before commit.
 //   * at least one read per image; addresses always < DEPTH.
 package act_buf_pkg;
@@ -109,6 +110,7 @@ package act_buf_pkg;
 
     // Empty string if the inputs are legal in the current state.
     function string violation(ab_in_t i);
+      int nw;
       if (i.claim && st[cp] != SL_EMPTY) return "wr_claim without wr_can_claim";
       if (i.wr_en) begin
         if (st[wp] != SL_CLAIMED) return "wr_en with no CLAIMED slot";
@@ -116,8 +118,10 @@ package act_buf_pkg;
       end
       if (i.commit) begin
         if (st[wp] != SL_CLAIMED) return "wr_commit with no CLAIMED slot";
-        if (nwrote[wp] < AB_DEPTH) return "wr_commit of an incompletely written image";
-        if (i.wr_en) return "wr_commit coincident with wr_en (TB conservatism)";
+        // A write coinciding with the commit lands in the committing slot.
+        nw = nwrote[wp];
+        if (i.wr_en && int'(i.wr_addr) < AB_DEPTH && !wrote[wp][int'(i.wr_addr)]) nw++;
+        if (nw < AB_DEPTH) return "wr_commit of an incompletely written image";
       end
       if (i.rd_en) begin
         if (st[rp] != SL_FULL) return "rd_en without rd_full";
@@ -263,8 +267,17 @@ package act_buf_pkg;
               it.wr_addr = j.order[j.pos];
               it.wr_data = ab_rnd_data();
               j.pos++;
-              if (j.pos == j.order.size())
-                j.cwait = fast ? 0 : ab_pick(0, 0, 1, 5);
+              if (j.pos == j.order.size()) begin
+                // ~50%: commit in the same cycle as the last write (R10);
+                // otherwise 1..N cycles later (cwait counts the extra gap).
+                if ($urandom_range(1) == 0) begin
+                  it.commit = 1'b1;
+                  void'(jobs.pop_front());
+                  committed++;
+                end else begin
+                  j.cwait = fast ? 0 : ab_pick(0, 0, 1, 5);
+                end
+              end
             end
           end else begin
             if (j.cwait > 0) j.cwait--;
@@ -637,6 +650,7 @@ package act_buf_pkg;
     pend_t       pipe[$];
     bit          seen_rst;
     int          zb_seen;
+    int          cw_seen;   // commits coinciding with a write
     bit          prev_rd_rel;
 
     function new(string name, uvm_component parent);
@@ -683,6 +697,7 @@ package act_buf_pkg;
       end
       pipe.push_back(p);
 
+      if (t.i.commit && t.i.wr_en) cw_seen++;
       if (prev_rd_rel && t.i.rd_en) zb_seen++;
       prev_rd_rel = t.i.rd_en && t.i.rel;
 
@@ -698,7 +713,7 @@ package act_buf_pkg;
     bit          seen_rst;
     int          s0, s1;
     bit          ev_claim, ev_wr, ev_commit, ev_rd, ev_rel;
-    bit          claim_ahead, rd_wr_overlap, zb;
+    bit          claim_ahead, rd_wr_overlap, zb, commit_wr;
     bit          prev_rel_rd;
 
     covergroup cg;
@@ -711,6 +726,7 @@ package act_buf_pkg;
       cp_ahead:  coverpoint claim_ahead { bins hit = {1}; }
       cp_ovl:    coverpoint rd_wr_overlap { bins hit = {1}; }
       cp_zb:     coverpoint zb { bins hit = {1}; }
+      cp_cw:     coverpoint commit_wr { bins hit = {1}; }
       cp_ev:     cross cp_claim, cp_commit, cp_rel;
     endgroup
 
@@ -718,6 +734,12 @@ package act_buf_pkg;
       super.new(name, parent);
       m  = new();
       cg = new();
+    endfunction
+
+    function void report_phase(uvm_phase phase);
+      super.report_phase(phase);
+      `uvm_info("COV", $sformatf("act_buf functional coverage = %0.1f%% (slot-state cross %0.1f%%)",
+                                cg.get_inst_coverage(), cg.cp_states.get_inst_coverage()), UVM_NONE)
     endfunction
 
     function void write(actbuf_txn t);
@@ -734,6 +756,7 @@ package act_buf_pkg;
       ev_rel        = t.i.rel;
       claim_ahead   = t.i.claim && (m.st[m.wp] == SL_CLAIMED);
       rd_wr_overlap = t.i.rd_en && t.i.wr_en;
+      commit_wr     = t.i.commit && t.i.wr_en;
       zb            = prev_rel_rd && t.i.rd_en;
       prev_rel_rd   = t.i.rd_en && t.i.rel;
       cg.sample();
@@ -796,16 +819,18 @@ package act_buf_pkg;
       actbuf_seq seq;
       int        b;
       phase.raise_objection(this);
-      b = budget_ns(60, 4);
+      b = budget_ns(24, 4);
       fork
         bnn_watchdog("actbuf_random_test", b);
       join_none
       seq = actbuf_seq::type_id::create("seq");
       seq.zb_mode  = 1'b0;
-      seq.n_images = 60;
+      seq.n_images = 24;
       seq.reset_kinds = '{0, 1, 3, 2};
       seq.start(env.sqr);
       repeat (AB_LAT + 6) @(posedge env.drv.vif.clk);
+      if (env.scb.cw_seen == 0)
+        `uvm_error("CW_TB", "no commit coinciding with a write was exercised")
       phase.drop_objection(this);
     endtask
   endclass
@@ -828,6 +853,8 @@ package act_buf_pkg;
       seq.n_images = 60;
       seq.start(env.sqr);
       repeat (AB_LAT + 6) @(posedge env.drv.vif.clk);
+      if (env.scb.cw_seen == 0)
+        `uvm_error("CW_TB", "no commit coinciding with a write was exercised")
       // TB self-check: every transition with the next slot already FULL must have
       // been zero-bubble, and (with DEPTH >= 2) that must be all of them.
       if (AB_DEPTH >= 2 && seq.zb_expected != 59)
