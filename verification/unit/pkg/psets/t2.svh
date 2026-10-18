@@ -1,0 +1,5 @@
+`define PSET_NAME "t2"
+`define PSET_TOTAL_LAYERS 2
+`define PSET_TOPOLOGY '{784, 10}
+`define PSET_PARALLEL_INPUTS 16
+`define PSET_PARALLEL_NEURONS '{5}

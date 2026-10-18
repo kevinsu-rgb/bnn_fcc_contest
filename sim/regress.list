@@ -1,0 +1,4 @@
+# <env> <pset> <test>
+pkg sfc pkg_values_test
+pkg odd pkg_values_test
+pkg t2 pkg_values_test

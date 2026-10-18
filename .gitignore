@@ -1,0 +1,8 @@
+sim/build/
+sim/cov_report/
+synth/out/
+*.jou
+*.log
+*.pb
+.Xil/
+xsim.dir/

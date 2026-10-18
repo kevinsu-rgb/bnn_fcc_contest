@@ -1,0 +1,5 @@
+`define PSET_NAME "odd"
+`define PSET_TOTAL_LAYERS 4
+`define PSET_TOPOLOGY '{13, 7, 5, 3}
+`define PSET_PARALLEL_INPUTS 5
+`define PSET_PARALLEL_NEURONS '{3, 9, 2}

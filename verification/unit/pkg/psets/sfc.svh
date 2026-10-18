@@ -1,0 +1,5 @@
+`define PSET_NAME "sfc"
+`define PSET_TOTAL_LAYERS 4
+`define PSET_TOPOLOGY '{784, 256, 256, 10}
+`define PSET_PARALLEL_INPUTS 16
+`define PSET_PARALLEL_NEURONS '{128, 8, 5}
