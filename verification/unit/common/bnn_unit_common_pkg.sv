@@ -54,4 +54,69 @@ package bnn_unit_common_pkg;
     endfunction
   endclass
 
+  // Layout model of one layer's private memories (spec §6.5), written from
+  // the plan's formulas only:
+  //   neuron n -> NP p = n mod PN, group g = n / PN
+  //   weight word of (n, chunk c) at address g*C + c, C = ceil(N/PW)
+  //   threshold of n at address g
+  //   packed weight word bit j = w[c*PW + j] if c*PW + j < N, else 1 (padding)
+  //   thresholds clamped to [0, N+1]
+  class bnn_layout;
+    int n;
+    int m;
+    int pw;
+    int pn;
+
+    function new(int n, int m, int pw, int pn);
+      this.n  = n;
+      this.m  = m;
+      this.pw = pw;
+      this.pn = pn;
+    endfunction
+
+    function int np_of(int neuron);
+      return neuron % pn;
+    endfunction
+
+    function int group_of(int neuron);
+      return neuron / pn;
+    endfunction
+
+    // C = ceil(N / PW)
+    function int c_count();
+      return (n + pw - 1) / pw;
+    endfunction
+
+    // G = ceil(M / PN)
+    function int g_count();
+      return (m + pn - 1) / pn;
+    endfunction
+
+    function int waddr(int neuron, int chunk);
+      int g, c;
+      g = group_of(neuron);
+      c = c_count();
+      return g * c + chunk;
+    endfunction
+
+    // Bits >= pw of the result are 0.
+    function logic [1023:0] pack_word(bit w[], int chunk);
+      logic [1023:0] r;
+      int idx;
+      r = '0;
+      for (int j = 0; j < pw; j++) begin
+        idx = chunk * pw + j;
+        if (idx < n) r[j] = w[idx];
+        else r[j] = 1'b1;
+      end
+      return r;
+    endfunction
+
+    function int clamp_thr(longint t, int n);
+      if (t < 0) return 0;
+      if (t > longint'(n) + 1) return n + 1;
+      return int'(t);
+    endfunction
+  endclass
+
 endpackage

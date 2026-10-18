@@ -1,0 +1,12 @@
+`define PSET_NAME "odd_hidden"
+`define PSET_LAYER_ID 0
+`define PSET_N 13
+`define PSET_M 7
+`define PSET_PW 5
+`define PSET_PN 3
+`define PSET_IS_OUTPUT 0
+`define PSET_RAM_STYLE "distributed"
+`define PSET_READ_LATENCY 1
+`define PSET_WB_NP_W 2
+`define PSET_WB_ADDR_W 4
+`define PSET_WB_DATA_W 5

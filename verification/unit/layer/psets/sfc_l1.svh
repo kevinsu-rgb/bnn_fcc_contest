@@ -1,0 +1,12 @@
+`define PSET_NAME "sfc_l1"
+`define PSET_LAYER_ID 1
+`define PSET_N 256
+`define PSET_M 256
+`define PSET_PW 128
+`define PSET_PN 8
+`define PSET_IS_OUTPUT 0
+`define PSET_RAM_STYLE "distributed"
+`define PSET_READ_LATENCY 1
+`define PSET_WB_NP_W 7
+`define PSET_WB_ADDR_W 7
+`define PSET_WB_DATA_W 128
