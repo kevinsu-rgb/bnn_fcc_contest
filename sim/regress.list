@@ -27,3 +27,13 @@ np pw128 np_random_test
 np pw8 np_random_test
 np pw1 np_random_test
 np pw5 np_random_test
+act_buf regs actbuf_random_test
+act_buf regs actbuf_zero_bubble_test
+act_buf ram49 actbuf_random_test
+act_buf ram49 actbuf_zero_bubble_test
+act_buf ram32 actbuf_random_test
+act_buf ram32 actbuf_zero_bubble_test
+act_buf d1 actbuf_random_test
+act_buf d1 actbuf_zero_bubble_test
+act_buf bram actbuf_random_test
+act_buf bram actbuf_zero_bubble_test
