@@ -2,3 +2,10 @@
 pkg sfc pkg_values_test
 pkg odd pkg_values_test
 pkg t2 pkg_values_test
+ram lut_sp_l1 ram_rw_test
+ram lut_sdp_l1 ram_rw_test
+ram lut_sp_l2 ram_rw_test
+ram bram_sp_l2 ram_rw_test
+ram bram_sdp_l1 ram_rw_test
+ram uram_sdp_l3 ram_rw_test
+ram tiny ram_rw_test
