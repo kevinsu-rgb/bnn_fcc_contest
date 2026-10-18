@@ -63,7 +63,11 @@ synth_design {*}$synth_args
 create_clock -name clk -period $period [get_ports clk]
 set data_in  [get_ports -filter {DIRECTION == IN} *]
 set data_in  [lsearch -all -inline -not -exact $data_in [get_ports clk]]
-if {[llength $data_in]}  { set_input_delay  -clock clk 0 $data_in }
+# -min 0.2: models an upstream register's clk->Q plus a short route, so port->FF hold paths are realistic.
+if {[llength $data_in]} {
+  set_input_delay -clock clk -max 0.0 $data_in
+  set_input_delay -clock clk -min 0.2 $data_in
+}
 set data_out [get_ports -filter {DIRECTION == OUT} *]
 if {[llength $data_out]} { set_output_delay -clock clk 0 $data_out }
 
