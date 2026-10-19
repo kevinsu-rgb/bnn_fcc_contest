@@ -1,5 +1,5 @@
 // System test: real trained MNIST model (python/model_data, python/test_vectors) through the full
-// bnn_fcc DUT at the judged parallelism (PARALLEL_INPUTS=66, PARALLEL_NEURONS={32,11,1}).
+// bnn_fcc DUT at the judged parallelism (PARALLEL_INPUTS=66, PARALLEL_NEURONS={32,3,1}).
 // The provided model class is subclassed because under xsim its load_single_layer accumulates the
 // per-line bit queue across lines (block-local queue in a loop is not re-created); the subclass
 // declares the queue outside the loop and clears it each line. Latency/throughput are computed here
@@ -87,7 +87,7 @@ module tb_mnist;
     .INPUT_DATA_WIDTH(8), .INPUT_BUS_WIDTH(BUS_W), .CONFIG_BUS_WIDTH(BUS_W),
     .OUTPUT_DATA_WIDTH(4), .OUTPUT_BUS_WIDTH(8),
     .TOTAL_LAYERS(4), .TOPOLOGY('{784, 256, 256, 10}),
-    .PARALLEL_INPUTS(66), .PARALLEL_NEURONS('{32, 11, 1})
+    .PARALLEL_INPUTS(66), .PARALLEL_NEURONS('{32, 3, 1})
   ) dut (.*);
 
   // ---------------- TB state
