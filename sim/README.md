@@ -42,7 +42,8 @@ cd openflex && openflex bnn_fcc_timing.yml -c bnn_fcc.csv
 Target `XCU250-FIGD2104-2L-E`; generated outputs are gitignored.
 
 ## Latest results
-- `sim/lint.sh`: clean. Unit TBs: 13/13 PASS. Provided-TB regression: 11/11 PASS.
-- `tb_mnist`: `MNIST: 100/100 match python` under stress (0.8 valid, random ready).
-- `sfc_perf` (PI 66, PN {32,11,1}, 100 images, no stalls): the TB reports 101.5 cycles/output. That is (first beat to last output)/N and includes pipeline fill: (99*99 + 349)/100 = 101.5. Steady state is 99 cycles/image, bound by the TB's input driver (98 beats + 1 idle cycle). Latency 349 cycles (`xsim_tb_fix` monitor). 985,221.7 outputs/s at a 10 ns clock.
-- Synthesis (Vivado 2025.2, XCU250-FIGD2104-2L-E): fMax 431.22 MHz; LUT 19965 (LUTAsLogic 12655, LUTAsMem 7310), REG 8971, CARRY8 186, BRAM 0, URAM 0, DSP 0 (re-run after the final RTL hardening; the earlier run gave 402.74 MHz, LUT 19946, REG 8960).
+`PARALLEL_INPUTS` sets the input width of the first hidden layer only; layers >= 1 read their whole fan-in in one pass (`docs/superpowers/specs/2026-10-18-parallel-inputs-first-layer-design.md`). Judged defaults: PI 66, PN {32,3,1}.
+- `sim/lint.sh`: clean. Unit TBs: 13/13 PASS (`tb_cfg_sequences` now also runs a `topo_hid` instance). Provided-TB regression: 11/11 PASS.
+- `tb_mnist` (PI 66, PN {32,3,1}): `MNIST: 100/100 match python` under stress (0.8 valid, random ready); avg latency 335.7 cycles, 125.5 cycles/output (stalls included, not steady state).
+- `sfc_perf` (PI 66, PN {32,11,1} - this wrapper's own values, not the judged PN; 100 images, no stalls): the TB reports 100.5 cycles/output. That is (first beat to last output)/N and includes pipeline fill: (99*99 + 249)/100 = 100.5. Steady state is 99 cycles/image, bound by the TB's input driver (98 beats + 1 idle cycle). Latency 249 cycles (`xsim_tb_fix` monitor; 349 before this change). 995,024.9 outputs/s at a 10 ns clock.
+- Synthesis (Vivado 2025.2, XCU250-FIGD2104-2L-E, PI 66, PN {32,3,1}): fMax 414.59 MHz; LUT 19035 (LUTAsLogic 13407, LUTAsMem 5628), REG 9028, CARRY8 218, BRAM 12, URAM 0, DSP 0. Previous design (PI 66 for every layer, PN {32,11,1}): fMax 431.22 MHz; LUT 19965 (LUTAsLogic 12655, LUTAsMem 7310), REG 8971, CARRY8 186, BRAM 0.
