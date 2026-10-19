@@ -3,7 +3,8 @@
 //   data_in AXIS -> input_packer -> pingpong[0] -> bnn_layer[0] -> pingpong[1] -> ... -> bnn_layer[L-1]
 //                -> argmax -> axis_out -> data_out AXIS
 // Layer l (l = 0..L-1, L = TOTAL_LAYERS-1) has fan-in F = TOPOLOGY[l], N = TOPOLOGY[l+1] neurons,
-// effective parallelism PN = min(PARALLEL_NEURONS[l], N), PW = min(PARALLEL_INPUTS, F).
+// effective parallelism PN = min(PARALLEL_NEURONS[l], N); input width PW = min(PARALLEL_INPUTS, F) for
+// layer 0 (first hidden layer) and PW = F (whole fan-in, one pass) for layers >= 1.
 // g_layer[l] holds layer l's input ping-pong buffer (written by input_packer or layer l-1), its
 // config writer and its bnn_layer.
 // Glue:
@@ -169,7 +170,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         localparam int  F_L      = TOPOLOGY[l];
         localparam int  N_L      = TOPOLOGY[l + 1];
         localparam int  PN_L     = imin(PARALLEL_NEURONS[l], N_L);
-        localparam int  PW_L     = imin(PARALLEL_INPUTS, F_L);
+        localparam int  PW_L     = (l == 0) ? imin(PARALLEL_INPUTS, F_L) : F_L;
         // producer chunk width: layer-0 words from input_packer, else the previous layer's PN
         localparam int  WRW_L    = (l == 0) ? PW_L : imin(PARALLEL_NEURONS[(l == 0) ? 0 : l - 1], F_L);
         localparam int  GROUPS_L = cdiv(N_L, PN_L);
