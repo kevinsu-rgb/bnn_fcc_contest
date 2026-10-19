@@ -401,7 +401,7 @@ module bl_case import bnn_fcc_pkg::*; #(
 endmodule
 
 module tb_bnn_layer;
-  localparam int NC = 14;
+  localparam int NC = 17;
   logic clk = 1'b0;
   always #5 clk = ~clk;
 
@@ -423,6 +423,10 @@ module tb_bnn_layer;
   bl_case #(.F(256), .N(10),  .PW(66), .PN(1),  .IS_OUTPUT(1), .LPS(1)) c11 (.clk(clk), .done(done[11]), .errors(errs[11]));
   bl_case #(.F(13),  .N(7),   .PW(3),  .PN(2),  .IS_OUTPUT(0), .LPS(1)) c12 (.clk(clk), .done(done[12]), .errors(errs[12]));
   bl_case #(.F(256), .N(256), .PW(66), .PN(11), .IS_OUTPUT(0), .LPS(2)) c13 (.clk(clk), .done(done[13]), .errors(errs[13]));
+  // single-pass full-width hidden layers (PW = F; judged layers 1-2)
+  bl_case #(.F(256), .N(256), .PW(256), .PN(3), .IS_OUTPUT(0))         c14 (.clk(clk), .done(done[14]), .errors(errs[14]));
+  bl_case #(.F(256), .N(10),  .PW(256), .PN(1), .IS_OUTPUT(1))         c15 (.clk(clk), .done(done[15]), .errors(errs[15]));
+  bl_case #(.F(256), .N(10),  .PW(256), .PN(1), .IS_OUTPUT(1), .LPS(1)) c16 (.clk(clk), .done(done[16]), .errors(errs[16]));
 
   initial begin
     #20ms;
