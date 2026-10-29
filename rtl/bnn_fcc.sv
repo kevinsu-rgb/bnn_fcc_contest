@@ -167,7 +167,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     );
 
     // ---------------- layers
-    logic [L-1:0] lyr_busy, pp_any_full;
+    logic [L-1:0] lyr_busy, pp_any_full, l_wr_busy;   // l_wr_busy: layer config write tree occupied
     logic         start_ok_q;
 
     for (genvar l = 0; l < L; l++) begin : g_layer
@@ -270,7 +270,8 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             .out_wr_oh(out_wr_oh), .out_wr_data(out_wr_data),
             .out_commit_en(out_commit_en), .out_commit_bank(out_commit_bank),
             .start_ok(start_ok), .res_valid(res_valid), .res_counts(res_counts),
-            .res_mask(res_mask), .res_last(res_last), .img_start(img_start), .busy(busy)
+            .res_mask(res_mask), .res_last(res_last), .img_start(img_start), .busy(busy),
+            .cfg_wr_busy(l_wr_busy[l])
         );
 
         assign lyr_busy[l]    = busy;
@@ -315,9 +316,9 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             // occupancy next cycle <= count + in_flight + out_start (a push this cycle moves an
             // image from in_flight to count, already counted once)
             start_ok_q  <= (CRD_W'(ao_count) + in_flight_q + CRD_W'(out_start)) < CRD_W'(OUT_FIFO_DEPTH);
-            accept_new_q    <= configured && !cfg_busy && (&cw_idle);
+            accept_new_q    <= configured && !cfg_busy && (&cw_idle) && !(|l_wr_busy);
             pipeline_idle_q <= !ip_mid && !(data_in_valid && data_in_ready) &&
-                               !(|pp_any_full) && !(|lyr_busy) && !am_busy && (&cw_idle);
+                               !(|pp_any_full) && !(|lyr_busy) && !am_busy && (&cw_idle) && !(|l_wr_busy);
         end
     end
 

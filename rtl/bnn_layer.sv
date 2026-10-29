@@ -7,6 +7,9 @@
 // per group of 8 lanes, valid in t+2). Each lane registers its own copy of the weight/threshold read
 // address in t+1 and reads its weight RAM (GROUPS*PASSES x PW) and threshold RAM (GROUPS x THR_W)
 // with a registered read, so x, w and thr reach the neuron processor together in t+2.
+// Config writes pass a two-level register tree (lane group of 8, then lane) and reach the RAMs 2 cycles
+// after the w_*/t_* ports; cfg_wr_busy is 1 while a write is in the tree. The image start does not
+// look at it (the top waits for it before admitting images).
 // Results leave through one register stage; the output group (one-hot) and bank are tracked at the
 // output (results come out in issue order).
 // Layout contract: neuron n -> lane n % PN, group n / PN; weight word at w_addr = group*PASSES + p,
@@ -55,7 +58,8 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   output logic [PN-1:0]                           res_mask,
   output logic                                    res_last,
   output logic                                    img_start,
-  output logic                                    busy
+  output logic                                    busy,
+  output logic                                    cfg_wr_busy
 );
   localparam int GROUPS    = cdiv(N, PN);
   localparam int PASSES    = cdiv(F, PW);
@@ -66,7 +70,9 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   localparam int TADDR_W   = bits(GROUPS);
   localparam int IN_IDX_W  = bits(PASSES);
   localparam int OUT_IDX_W = bits(GROUPS);
-  localparam int LG        = 8;                              // lanes per operand copy
+  localparam int LG        = 8;                              // lanes per operand copy / write group
+  localparam int NG        = cdiv(PN, LG);
+  localparam int LO_W      = (PN > LG) ? bits(LG) : LANE_W;  // lane index within a group
   localparam int NPL       = np_latency(PW, POPCOUNT_LEVELS_PER_STAGE);
   localparam int LAST_LANES = N - (GROUPS - 1) * PN;          // valid lanes in the last group
   localparam logic [PN-1:0] LAST_MASK = {PN{1'b1}} >> (PN - LAST_LANES);
@@ -140,6 +146,49 @@ module bnn_layer import bnn_fcc_pkg::*; #(
 
   assign busy = issue | (|vpipe);
 
+  // ---------------- config write tree, level 1: one register set per lane group, loaded only when
+  // that group is written (so the copies differ); data gets a second group stage to stay aligned
+  // with level 2 when the same group is written in consecutive cycles
+  logic [NG-1:0]      gw_q, gt_q;
+  logic [LO_W-1:0]    glane_q [NG], gtlane_q [NG];
+  logic [WADDR_W-1:0] gaddr_q [NG];
+  logic [PW-1:0]      gdata_q [NG], gdata2_q [NG];
+  logic [TADDR_W-1:0] gtaddr_q [NG];
+  /* verilator lint_off UNUSEDSIGNAL */   // threshold tree unused when IS_OUTPUT
+  logic [THR_W-1:0]   gtdata_q [NG], gtdata2_q [NG];
+  /* verilator lint_on UNUSEDSIGNAL */
+  logic [PN-1:0]      lw_q, lt_q;   // level 2 write enables (per lane)
+
+  for (genvar gi = 0; gi < NG; gi++) begin : g_wgrp
+    logic wsel, tsel;
+    assign wsel = w_we && (int'(w_lane) / LG == gi);
+    assign tsel = !IS_OUTPUT && t_we && (int'(t_lane) / LG == gi);
+
+    always_ff @(posedge clk) begin
+      if (rst) begin
+        gw_q[gi] <= 1'b0;
+        gt_q[gi] <= 1'b0;
+      end else begin
+        gw_q[gi] <= wsel;
+        gt_q[gi] <= tsel;
+      end
+      if (wsel) begin
+        glane_q[gi] <= LO_W'(int'(w_lane) % LG);
+        gaddr_q[gi] <= w_addr;
+        gdata_q[gi] <= w_data;
+      end
+      if (tsel) begin
+        gtlane_q[gi] <= LO_W'(int'(t_lane) % LG);
+        gtaddr_q[gi] <= t_addr;
+        gtdata_q[gi] <= t_data;
+      end
+      gdata2_q[gi]  <= gdata_q[gi];
+      gtdata2_q[gi] <= gtdata_q[gi];
+    end
+  end
+
+  assign cfg_wr_busy = (|gw_q) | (|gt_q) | (|lw_q) | (|lt_q);
+
   // ---------------- lanes: weight RAM, threshold RAM, neuron processor
   /* verilator lint_off UNUSEDSIGNAL */  // lanes run in lockstep (only np_ov[0] used); y or acc per mode
   logic [PN-1:0]       np_ov;
@@ -148,32 +197,49 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   /* verilator lint_on UNUSEDSIGNAL */
 
   for (genvar k = 0; k < PN; k++) begin : g_lane
-    logic             w_lane_we;
-    logic [PW-1:0]    w_rd;
-    logic [THR_W-1:0] t_rd;
+    localparam int GI = k / LG;
+    logic [PW-1:0]      w_rd;
+    logic [THR_W-1:0]   t_rd;
+    logic               lsel, ltsel;
+    logic [WADDR_W-1:0] laddr_q;   // write address, level 2 (loads only for this lane)
+    /* verilator lint_off UNUSEDSIGNAL */   // unused when IS_OUTPUT
+    logic [TADDR_W-1:0] ltaddr_q;
+    /* verilator lint_on UNUSEDSIGNAL */
     // per-lane read address copies (kept: identical across lanes, each drives only this lane's RAMs)
     (* keep = "true" *) logic [WADDR_W-1:0] la_q;
 
-    assign w_lane_we = w_we & (w_lane == LANE_W'(k));
+    assign lsel  = gw_q[GI] && (glane_q[GI] == LO_W'(k % LG));
+    assign ltsel = gt_q[GI] && (gtlane_q[GI] == LO_W'(k % LG));
 
-    always_ff @(posedge clk) la_q <= waddr_r;
+    always_ff @(posedge clk) begin
+      if (rst) begin
+        lw_q[k] <= 1'b0;
+        lt_q[k] <= 1'b0;
+      end else begin
+        lw_q[k] <= lsel;
+        lt_q[k] <= ltsel;
+      end
+      if (lsel)  laddr_q  <= gaddr_q[GI];
+      if (ltsel) ltaddr_q <= gtaddr_q[GI];
+      la_q <= waddr_r;
+    end
 
     if (RAM_STYLE == "block") begin : g_wram
       (* ram_style = "block" *) logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
-        if (w_lane_we) wmem[w_addr] <= w_data;
+        if (lw_q[k]) wmem[laddr_q] <= gdata2_q[GI];
         w_rd <= wmem[la_q];
       end
     end else if (RAM_STYLE == "distributed") begin : g_wram
       (* ram_style = "distributed" *) logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
-        if (w_lane_we) wmem[w_addr] <= w_data;
+        if (lw_q[k]) wmem[laddr_q] <= gdata2_q[GI];
         w_rd <= wmem[la_q];
       end
     end else begin : g_wram
       logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
-        if (w_lane_we) wmem[w_addr] <= w_data;
+        if (lw_q[k]) wmem[laddr_q] <= gdata2_q[GI];
         w_rd <= wmem[la_q];
       end
     end
@@ -183,7 +249,7 @@ module bnn_layer import bnn_fcc_pkg::*; #(
       (* keep = "true" *) logic [TADDR_W-1:0] lg_q;
       always_ff @(posedge clk) lg_q <= TADDR_W'(g_r);
       always_ff @(posedge clk) begin
-        if (t_we && t_lane == LANE_W'(k)) tmem[t_addr] <= t_data;
+        if (lt_q[k]) tmem[ltaddr_q] <= gtdata2_q[GI];
         t_rd <= tmem[lg_q];
       end
     end else begin : g_no_tram

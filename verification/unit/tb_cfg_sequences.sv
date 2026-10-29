@@ -25,7 +25,8 @@
 //                                               must equal the reference class of a model in model_q
 //   monitor (always block)                      collects outputs; checks keep/last, valid/data stable
 //                                               under backpressure, no output without an accepted image,
-//                                               no X on data_out_valid
+//                                               no X on data_out_valid, no image beat accepted while a
+//                                               layer's config write tree holds a write (cfg_wr_busy)
 module cfgseq_harness #(
   parameter string NAME = "topo4",
   parameter int TOTAL_LAYERS = 4,
@@ -88,6 +89,12 @@ module cfgseq_harness #(
     .OUT_FIFO_DEPTH(FIFO_DEPTH)
   ) dut (.*);
 
+  // per-layer config write tree occupancy (white-box)
+  logic [L-1:0] l_wrb;
+  for (genvar l = 0; l < L; l++) begin : g_wrb
+    assign l_wrb[l] = dut.g_layer[l].u_layer.cfg_wr_busy;
+  end
+
   // ---------------- TB state
   int         errors = 0;
   longint     cyc = 0;
@@ -148,6 +155,7 @@ module cfgseq_harness #(
         cfg_cyc_q.push_back(cyc);
       end
       if (data_in_valid && data_in_ready) begin
+        if (|l_wrb) fail($sformatf("image beat accepted while a config write is in flight (cfg_wr_busy %b)", l_wrb));
         if (!mon_in_mid) begin
           img_acc++;
           img_cyc_q.push_back(cyc);
@@ -634,6 +642,19 @@ module cfgseq_harness #(
     send_batch(1'b0);
     expect1(a, -1, "test_reordered");
     check_quiet(100, "test_reordered");
+    test_end();
+  endtask
+
+  // An image driven (zero gaps) right after the last config message: it must wait for the write tree.
+  task automatic test_image_right_after_config();
+    model_t a;
+    test_begin("test_image_right_after_config");
+    a = new_random_model();
+    send_config(a, ORD_NORMAL, 1'b0);
+    gen_batch(4);
+    send_batch(1'b1);
+    expect1(a, -1, "test_image_right_after_config");
+    check_quiet(100, "test_image_right_after_config");
     test_end();
   endtask
 
@@ -1155,6 +1176,7 @@ module cfgseq_harness #(
     process::self().srandom(SEED);
     $display("[%s] TOPOLOGY %p PARALLEL_INPUTS %0d PARALLEL_NEURONS %p", NAME, TOPOLOGY, PARALLEL_INPUTS, PARALLEL_NEURONS);
     test_reordered();
+    test_image_right_after_config();
     test_not_configured();
     reconfig_one("test_weights_only_reconfig", 1, 1'b0);
     reconfig_one("test_thresholds_only_reconfig", 0, 1'b1);

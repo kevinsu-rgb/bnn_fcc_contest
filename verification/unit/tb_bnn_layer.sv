@@ -65,7 +65,7 @@ module bl_case import bnn_fcc_pkg::*; #(
   logic [PN*ACC_W-1:0]  res_counts;
   logic [PN-1:0]        res_mask;
   logic                 res_last;
-  logic                 img_start, busy;
+  logic                 img_start, busy, cfg_wr_busy;
 
   bnn_layer #(.F(F), .N(N), .PW(PW), .PN(PN), .IS_OUTPUT(IS_OUTPUT),
               .POPCOUNT_LEVELS_PER_STAGE(LPS), .RAM_STYLE("auto")) dut (
@@ -78,7 +78,7 @@ module bl_case import bnn_fcc_pkg::*; #(
     .out_wr_data(out_wr_data), .out_commit_en(out_commit_en), .out_commit_bank(out_commit_bank),
     .start_ok(start_ok), .res_valid(res_valid), .res_counts(res_counts),
     .res_mask(res_mask), .res_last(res_last),
-    .img_start(img_start), .busy(busy)
+    .img_start(img_start), .busy(busy), .cfg_wr_busy(cfg_wr_busy)
   );
 
   pingpong_buf #(.NBITS(F), .WR_W(PW), .RD_W(PW), .RD_COPIES(NG)) u_in (
@@ -270,6 +270,16 @@ module bl_case import bnn_fcc_pkg::*; #(
     end
   endtask
 
+  // ---------------- config write tree: a write reaches the RAMs 2 cycles after the port, and
+  // cfg_wr_busy is 1 exactly while one is in flight (driven in either of the previous 2 cycles)
+  bit we_d1 = 1'b0, we_d2 = 1'b0;
+  always @(posedge clk) begin
+    if (!rst && cfg_wr_busy !== (we_d1 || we_d2))
+      fail($sformatf("cfg_wr_busy=%b, expected %b", cfg_wr_busy, we_d1 || we_d2));
+    we_d2 = we_d1;
+    we_d1 = !rst && (w_we === 1'b1 || (!IS_OUTPUT && t_we === 1'b1));
+  end
+
   // ---------------- monitor (samples pre-edge values at each posedge)
   bit run = 1'b0;
   int cyc = 0;
@@ -384,6 +394,7 @@ module bl_case import bnn_fcc_pkg::*; #(
     @(negedge clk);
     if (busy !== 1'b0 || img_start !== 1'b0) fail("busy/img_start not low after reset");
     configure();
+    while (cfg_wr_busy !== 1'b0) @(negedge clk);
     run = 1'b1;
     fork
       produce();
