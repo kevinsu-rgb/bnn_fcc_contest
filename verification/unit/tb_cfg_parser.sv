@@ -5,7 +5,8 @@
 // the next header. pl_ready is random; pipeline_idle is random except in the directed WAIT_IDLE phase.
 //
 // Every cycle the monitor checks: configured and the load flags against a model (cleared at msg_start,
-// set on clean completion); drop_rest / msg_abort only and exactly on the expected handshakes; payload
+// set on clean completion); drop_rest only and exactly on the expected handshakes; msg_abort exactly one
+// cycle after the handshake of a truncating item (registered) and never otherwise; payload
 // bytes (with msg_sel/msg_type) against the expected queue; pl_valid only inside an accepted message;
 // msg_start (layer/type) exactly when the WAIT_IDLE rule says (pipeline_idle honored from the second
 // WAIT_IDLE cycle), with pl_valid low in that cycle; s_ready low in WAIT_IDLE; cfg_busy rising only after
@@ -13,7 +14,8 @@
 // moment to check that s_ready does not depend combinationally on s_valid.
 //
 // Phases: (a) valid messages for every layer/type (TB order, then shuffled), (b) every invalid header kind,
-// (c) truncated messages, (d) directed WAIT_IDLE, (e) TLAST during a header, (f) reset.
+// (c) truncated messages (including a null item when one payload byte is left), (d) directed WAIT_IDLE,
+// (e) TLAST during a header, (f) reset. Phase (b) includes DISCARD messages of 1 and 2 bytes.
 module tb_cfg_parser;
   localparam int TL = 4;
   localparam int TOPO [TL] = '{13, 7, 5, 3};
@@ -85,6 +87,7 @@ module tb_cfg_parser;
   int    last_wait_len = 0;
   int    n_start = 0, n_abort = 0, n_drop = 0, n_pl = 0, n_conf_rise = 0;
   bit    prev_conf = 1'b0;
+  bit    abort_pend = 1'b0;   // a truncating handshake happened last cycle: msg_abort expected now
 
   function automatic bit model_conf();
     bit c;
@@ -114,16 +117,15 @@ module tb_cfg_parser;
       prev_conf = configured;
 
       if (drop_rest && !hs) begin errors++; $error("drop_rest without a handshake"); end
-      if (msg_abort && !hs) begin errors++; $error("msg_abort without a handshake"); end
+      if (msg_abort !== abort_pend) begin
+        errors++; $error("msg_abort=%b, expected %b (one cycle after the truncating handshake)", msg_abort, abort_pend);
+      end
+      if (msg_abort) n_abort++;
       if (hs) begin
         if (drop_rest !== cur.exp_drop) begin
           errors++; $error("drop_rest=%b, expected %b (byte %02h)", drop_rest, cur.exp_drop, cur.b);
         end
-        if (msg_abort !== cur.exp_abort) begin
-          errors++; $error("msg_abort=%b, expected %b", msg_abort, cur.exp_abort);
-        end
         if (drop_rest) n_drop++;
-        if (msg_abort) n_abort++;
       end
 
       if (pl_valid && !(cfg_busy && started && !msg_start)) begin
@@ -184,11 +186,13 @@ module tb_cfg_parser;
       prev_busy   = cfg_busy;
       hs_hv_prev  = hs && cur.exp_hv;
       hs_end_prev = hs && (cur.exp_done || cur.exp_abort);
+      abort_pend  = hs && cur.exp_abort;
     end
 
     // ---- drivers
     if (rst) begin
       s_valid <= 1'b0;
+      abort_pend = 1'b0;
     end else begin
       if (hs && drop_rest) while (items.size() != 0 && items[0].beat == cur.beat) void'(items.pop_front());
       if (!s_valid || s_ready) begin
@@ -443,7 +447,8 @@ module tb_cfg_parser;
     // ---------------- (b) invalid headers are discarded
     bad_and_check(2,     0, 13, 7, 2, 14);          // unknown msg_type
     bad_and_check(8'h81, 0, 32, 7, 4, 28);          // unknown msg_type (bit 0 set)
-    bad_and_check(0,     3, 3,  1, 1, 1);           // weights, layer_id 3
+    bad_and_check(0,     3, 3,  1, 1, 1);           // weights, layer_id 3 (DISCARD of 1 byte)
+    bad_and_check(0,     3, 3,  1, 1, 2);           // DISCARD of 2 bytes
     bad_and_check(1,     2, 32, 3, 4, 12);          // thresholds for the output layer
     bad_and_check(0,     1, 8,  5, 1, 5);           // wrong layer_inputs
     bad_and_check(0,     0, 13, 6, 2, 12);          // wrong num_neurons (weights)
@@ -468,6 +473,7 @@ module tb_cfg_parser;
     a0 = n_abort;
     add_w(0, EM_TRUNC, 7);
     wait_done();
+    @(negedge clk);
     check(n_abort == a0 + 1 && !dut.w_loaded[0] && configured === 1'b0, "(c) truncated weights");
     add_w(0);
     wait_done();
@@ -476,9 +482,12 @@ module tb_cfg_parser;
     add_w(2, EM_TRUNC, 1);
     add_t(0, EM_TRUNC_NULL, 0);
     add_w(1, EM_TRUNC_NULL, 4);
+    add_w(0, EM_TRUNC_NULL, TOPO[1] * bpn_of(0) - 1);   // null item with one payload byte left
     wait_done();
-    check(n_abort == a0 + 5 && configured === 1'b0, "(c) truncations");
-    check(!dut.t_loaded[1] && !dut.w_loaded[2] && !dut.t_loaded[0] && !dut.w_loaded[1], "(c) flags cleared");
+    @(negedge clk);   // msg_abort is registered: let the last one be counted
+    check(n_abort == a0 + 6 && configured === 1'b0, "(c) truncations");
+    check(!dut.t_loaded[1] && !dut.w_loaded[2] && !dut.t_loaded[0] && !dut.w_loaded[1] && !dut.w_loaded[0],
+          "(c) flags cleared");
     add_full_config(1'b1, 0, 1'b0);
     wait_done();
     check(configured === 1'b1, "(c) configured again");

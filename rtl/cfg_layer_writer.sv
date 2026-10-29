@@ -1,5 +1,6 @@
 // Per-layer configuration writer: turns a payload byte stream into bnn_layer config writes.
-// Every accepted byte is registered first (in_*_q) and handled one cycle later.
+// Every accepted byte is registered first (in_v_q, in_byte_q) and handled one cycle later; the
+// byte-in-neuron counter bn_q advances on the registered byte, so nothing upstream drives it.
 // Weights: each neuron is ceil(F/8) bytes (bit i at byte i/8 bit i%8). Byte b is stored at fixed
 // position stage[8b +: 8] (bits >= F dropped). After the neuron's last byte the writer emits PASSES
 // words, one per cycle: word p = stage bits [p*PW, (p+1)*PW), bits >= F padded with 1, written to
@@ -64,44 +65,33 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   assign acc = s_valid && s_ready;
 
   // ---------------- input register
-  logic            in_v_q, in_last_q;
+  logic            in_v_q;
   logic [7:0]      in_byte_q;
-  logic [BN_W-1:0] in_bn_q, bn_q;
-  logic            last_byte;
+  logic [BN_W-1:0] bn_q;        // byte index (within its neuron) of the registered byte
+  logic            wr_byte, last_byte;
 
+  assign wr_byte   = in_v_q && !mt_q;
   assign last_byte = (bn_q == BN_W'(BPN - 1));
 
   always_ff @(posedge clk) begin
     if (rst || clr) begin
-      in_v_q    <= 1'b0;
-      in_last_q <= 1'b0;
-      bn_q      <= '0;
+      in_v_q <= 1'b0;
+      bn_q   <= '0;
     end else begin
       in_v_q <= acc;
-      if (acc) begin
-        in_last_q <= !mt_q && last_byte;
-        if (!mt_q) bn_q <= last_byte ? '0 : bn_q + 1'b1;
-      end
+      if (wr_byte) bn_q <= last_byte ? '0 : bn_q + 1'b1;
     end
   end
 
-  always_ff @(posedge clk) begin
-    if (acc) begin
-      in_byte_q <= s_byte;
-      in_bn_q   <= bn_q;
-    end
-  end
+  always_ff @(posedge clk) if (acc) in_byte_q <= s_byte;
 
   // ---------------- weights: neuron staging register (fixed byte positions)
   logic [F-1:0] stage;
-  logic         wr_byte;
-
-  assign wr_byte = in_v_q && !mt_q;
 
   for (genvar c = 0; c < BPN; c++) begin : g_byte
     localparam int NB = imin(8, F - 8 * c);
     always_ff @(posedge clk)
-      if (wr_byte && in_bn_q == BN_W'(c)) stage[8*c +: NB] <= in_byte_q[NB-1:0];
+      if (wr_byte && bn_q == BN_W'(c)) stage[8*c +: NB] <= in_byte_q[NB-1:0];
   end
 
   // Word view of the padded neuron; rows >= PASSES are never selected.
@@ -125,9 +115,9 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   logic [LANE_W-1:0]  lane_q;
   logic [WADDR_W-1:0] waddr_q, gbase_q;
 
-  assign em_start = wr_byte && in_last_q;
+  assign em_start = wr_byte && last_byte;
   assign em_last  = (p_q == P_W'(PASSES - 1));
-  assign s_ready  = mt_q || OVERLAP || (!(in_v_q && in_last_q) && !em_q);
+  assign s_ready  = mt_q || OVERLAP || (!em_start && !em_q);
 
   always_ff @(posedge clk) begin
     if (rst || clr) begin
