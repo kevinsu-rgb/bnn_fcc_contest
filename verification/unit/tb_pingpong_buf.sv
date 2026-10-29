@@ -142,7 +142,7 @@ module pp_case import bnn_fcc_pkg::*; #(
 endmodule
 
 module tb_pingpong_buf;
-  localparam int NC = 10;
+  localparam int NC = 11;
   logic clk = 1'b0;
   always #5 clk = ~clk;
 
@@ -160,6 +160,8 @@ module tb_pingpong_buf;
   // full-width read (RD_W = NBITS): input buffer of a single-pass layer
   pp_case #(.NBITS(256), .WR_W(32), .RD_W(256)) c8 (.clk(clk), .done(done[8]), .errors(errs[8]));
   pp_case #(.NBITS(256), .WR_W(3),  .RD_W(256)) c9 (.clk(clk), .done(done[9]), .errors(errs[9]));
+  // layer-0 input buffer: 8-bit image beats in, PARALLEL_INPUTS-wide words out
+  pp_case #(.NBITS(784), .WR_W(8),  .RD_W(66))  c10 (.clk(clk), .done(done[10]), .errors(errs[10]));
 
   initial begin
     #50ms;
