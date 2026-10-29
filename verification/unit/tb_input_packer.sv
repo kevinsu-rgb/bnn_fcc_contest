@@ -1,12 +1,12 @@
-// Self-checking testbench for input_packer. A pingpong_buf captures the writes; the TB checks every
-// committed bank against a reference and releases banks after a (random) delay.
+// Self-checking testbench for input_packer (position-based TKEEP). A pingpong_buf captures the writes;
+// the TB checks every committed bank against a reference and releases banks after a (random) delay.
+// Position rule: pixel i is lane i % K of beat i / K; a TKEEP = 0 lane is stored as a 0 pixel in place.
 // MODE 0: back-to-back full beats, immediate release (throughput check)
-// MODE 1: random valid gaps, full beats + TKEEP-trimmed last beat, kinds: normal/extra/early
-// MODE 2: random valid gaps, sparse TKEEP inside beats
+// MODE 1: random valid gaps, full beats + TKEEP-trimmed last beat, kinds: normal/overlong/early
+// MODE 2: random valid gaps, random TKEEP = 0 lanes inside beats, sometimes a trailing TKEEP = 0 TLAST beat
 module ip_case import bnn_fcc_pkg::*; #(
   parameter int BUS_W = 64,
   parameter int F0    = 784,
-  parameter int PW0   = 66,
   parameter int MODE  = 1,
   parameter int NIMG  = 30
 ) (
@@ -16,7 +16,7 @@ module ip_case import bnn_fcc_pkg::*; #(
 );
   localparam int DATA_W = 8;
   localparam int K      = BUS_W / DATA_W;
-  localparam int NCH    = cdiv(F0, PW0);
+  localparam int NCH    = cdiv(F0, K);
 
   logic rst = 1'b1;
   logic s_valid = 1'b0, s_last = 1'b0, s_ready;
@@ -26,10 +26,10 @@ module ip_case import bnn_fcc_pkg::*; #(
   logic [1:0] buf_full;
   logic wr_en, wr_bank, commit_en, commit_bank, mid_image;
   logic [bits(NCH)-1:0] wr_idx;
-  logic [PW0-1:0] wr_data;
+  logic [K-1:0] wr_data;
   logic rls_en = 1'b0, rls_bank = 1'b0;
 
-  input_packer #(.DATA_W(DATA_W), .BUS_W(BUS_W), .F0(F0), .PW0(PW0)) dut (
+  input_packer #(.DATA_W(DATA_W), .BUS_W(BUS_W), .F0(F0)) dut (
     .clk(clk), .rst(rst),
     .s_valid(s_valid), .s_ready(s_ready), .s_data(s_data), .s_keep(s_keep), .s_last(s_last),
     .accept_new(accept_new), .buf_full(buf_full),
@@ -37,7 +37,7 @@ module ip_case import bnn_fcc_pkg::*; #(
     .commit_en(commit_en), .commit_bank(commit_bank), .mid_image(mid_image)
   );
 
-  pingpong_buf #(.NBITS(F0), .WR_W(PW0), .RD_W(PW0)) pp (
+  pingpong_buf #(.NBITS(F0), .WR_W(K), .RD_W(K)) pp (
     .clk(clk), .rst(rst),
     .wr_en(wr_en), .wr_bank(wr_bank), .wr_idx(wr_idx), .wr_data(wr_data),
     .commit_en(commit_en), .commit_bank(commit_bank),
@@ -46,62 +46,59 @@ module ip_case import bnn_fcc_pkg::*; #(
   );
 
   string tag;
-  initial tag = $sformatf("BUS_W=%0d F0=%0d PW0=%0d MODE=%0d", BUS_W, F0, PW0, MODE);
+  initial tag = $sformatf("BUS_W=%0d F0=%0d MODE=%0d", BUS_W, F0, MODE);
 
   // ---------------- stimulus generation ----------------
   logic [BUS_W-1:0]   bd [$];
   logic [K-1:0]       bk [$];
   bit                 bl [$];
-  logic [F0-1:0]      eimg [$];
-  int                 enb  [$];
-  logic [7:0]         pixq [$];
+  logic [F0-1:0]      eimg [$];   // expected stored bits (0 at TKEEP = 0 positions)
+  int                 enb  [$];   // number of checked bits (positions covered by the beats sent, <= F0)
   logic [F0-1:0]      eimg_v;
   logic [BUS_W-1:0]   gd;
   logic [K-1:0]       gk;
-  int                 npix, nb, pi, kind;
+  logic [7:0]         px;
+  int                 npos, nbeats, kind, pos;
 
   initial begin
     bd.delete(); bk.delete(); bl.delete(); eimg.delete(); enb.delete();
     for (int im = 0; im < NIMG; im++) begin
       kind = (MODE == 0) ? 0 : im % 5;
-      if (kind == 2)                npix = F0 + 1 + $urandom_range(0, K + 2);
-      else if (kind == 3 && F0 > 1) npix = $urandom_range(1, F0 - 1);
-      else                          npix = F0;
-      pixq.delete();
-      for (int i = 0; i < npix; i++) pixq.push_back(8'($urandom));
+      if (kind == 2)                npos = F0 + 1 + $urandom_range(0, K + 2);   // overlong
+      else if (kind == 3 && F0 > 1) npos = $urandom_range(1, F0 - 1);           // early TLAST
+      else                          npos = F0;
+      nbeats = cdiv(npos, K);
       eimg_v = '0;
-      nb = (npix < F0) ? npix : F0;
-      for (int i = 0; i < nb; i++) eimg_v[i] = pixq[i][7];
-      eimg.push_back(eimg_v);
-      enb.push_back(nb);
-      pi = 0;
-      while (pi < npix) begin
+      for (int t = 0; t < nbeats; t++) begin
         gd = {BUS_W/32 + 1{$urandom}} ^ {BUS_W/32 + 1{$urandom}};
         gk = '0;
         for (int l = 0; l < K; l++) begin
-          if (pi < npix && (MODE != 2 || $urandom_range(0, 99) < 60)) begin
+          pos = t * K + l;
+          if (pos < npos && (MODE != 2 || $urandom_range(0, 99) < 60)) begin
             gk[l] = 1'b1;
-            gd[l*DATA_W +: DATA_W] = pixq[pi];
-            pi++;
+            px = 8'($urandom);
+            gd[l*DATA_W +: DATA_W] = px;
+            if (pos < F0) eimg_v[pos] = px[7];
           end
         end
-        bd.push_back(gd); bk.push_back(gk); bl.push_back(pi >= npix);
+        bd.push_back(gd); bk.push_back(gk); bl.push_back(t == nbeats - 1);
       end
       if (MODE == 2 && $urandom_range(0, 3) == 0) begin
+        // trailing beat with TKEEP = 0 carries TLAST; its positions are stored as 0
         bl[bl.size()-1] = 1'b0;
         bd.push_back({BUS_W/32 + 1{$urandom}}); bk.push_back('0); bl.push_back(1'b1);
+        nbeats++;
       end
+      eimg.push_back(eimg_v);
+      enb.push_back(imin(nbeats * K, F0));
     end
   end
 
   // ---------------- driver + handshake / ready checks ----------------
   int  bi = 0;
   int  stalls = 0;
-  int  accnew0_ready = 0;
   bit  img_active = 1'b0;
   bit  hs, rdy_a, rdy_b;
-  logic pk_ready;
-  assign pk_ready = dut.pk_ready;
 
   initial begin
     errors = 0;
@@ -115,21 +112,18 @@ module ip_case import bnn_fcc_pkg::*; #(
       if (mid_image !== img_active) begin
         errors++; $error("%s: mid_image=%b expected %b", tag, mid_image, img_active);
       end
-      if (s_valid && !s_ready) stalls++;
-      if (!mid_image && !accept_new && s_ready) begin
-        errors++; $error("%s: s_ready high at image boundary with accept_new=0", tag);
+      if (s_ready !== (mid_image || (accept_new && !buf_full[wr_bank]))) begin
+        errors++; $error("%s: s_ready=%b, expected mid_image | accept_new & !full (%b %b %b)",
+                         tag, s_ready, mid_image, accept_new, buf_full);
       end
-      if (!mid_image && s_ready && buf_full[wr_bank]) begin
-        errors++; $error("%s: s_ready high at image boundary with bank full", tag);
+      if (commit_en !== (s_valid && s_ready && s_last)) begin
+        errors++; $error("%s: commit_en=%b, expected accepted-TLAST %b", tag, commit_en, s_valid && s_ready && s_last);
       end
-      if (mid_image && s_ready !== pk_ready) begin
-        errors++; $error("%s: mid-image s_ready=%b differs from packer ready=%b", tag, s_ready, pk_ready);
+      if (s_valid && !s_ready) begin
+        stalls++;
+        if (mid_image) begin errors++; $error("%s: mid-image stall", tag); end
       end
-      if (mid_image && !accept_new && s_ready) accnew0_ready++;
       if (hs) begin
-        if (!img_active && !(accept_new && !buf_full[wr_bank])) begin
-          errors++; $error("%s: image started with accept_new=%b full=%b", tag, accept_new, buf_full);
-        end
         img_active = 1'b1;
         bi++;
       end
@@ -163,7 +157,6 @@ module ip_case import bnn_fcc_pkg::*; #(
   bit  cm_d = 1'b0;
   bit  cm_bank_d = 1'b0;
   bit  exp_bank = 1'b0;
-  int  nbits_chk;
   int  settle = 0;
 
   always @(posedge clk) begin : chk
@@ -181,9 +174,8 @@ module ip_case import bnn_fcc_pkg::*; #(
         if (chk_idx >= NIMG) begin
           errors++; $error("%s: extra commit", tag);
         end else begin
-          nbits_chk = imin(cdiv(enb[chk_idx], PW0) * PW0, F0);
-          for (int j = 0; j < F0; j++)
-            if (j < nbits_chk && pp.mem[cm_bank_d][j] !== eimg[chk_idx][j]) begin
+          for (int j = 0; j < enb[chk_idx]; j++)
+            if (pp.mem[cm_bank_d][j] !== eimg[chk_idx][j]) begin
               errors++;
               $error("%s: image %0d bit %0d exp=%b got=%b", tag, chk_idx, j,
                      eimg[chk_idx][j], pp.mem[cm_bank_d][j]);
@@ -221,11 +213,10 @@ module ip_case import bnn_fcc_pkg::*; #(
         if (ncommit != NIMG) begin
           errors++; $error("%s: %0d commits, expected %0d", tag, ncommit, NIMG);
         end
-        if (MODE == 0 && PW0 >= K && stalls > NIMG) begin
+        // back-to-back images only stall at boundaries, and only when a bank is still being released
+        if (MODE == 0 && NCH > 2 && stalls > 0) begin
           errors++; $error("%s: %0d stall cycles for %0d images (throughput)", tag, stalls, NIMG);
         end
-        if (MODE != 0 && accnew0_ready == 0)
-          $display("NOTE %s: no mid-image cycle with accept_new=0 and s_ready=1 observed", tag);
         done = 1'b1;
       end
     end
@@ -233,28 +224,26 @@ module ip_case import bnn_fcc_pkg::*; #(
 endmodule
 
 module tb_input_packer;
-  localparam int NCFG = 5;
-  localparam int CB [NCFG] = '{64, 8, 128, 64, 32};
-  localparam int CF [NCFG] = '{784, 13, 100, 5, 20};
-  localparam int CP [NCFG] = '{66, 3, 7, 1, 64};
+  localparam int NCFG = 6;
+  localparam int CB [NCFG] = '{64, 8, 128, 64, 32, 64};
+  localparam int CF [NCFG] = '{784, 13, 100, 5, 20, 64};   // F0 = 64, BUS 64: NCH = 8 (power of two)
 
   logic clk = 1'b0;
   always #5 clk = ~clk;
 
-  logic done [NCFG*3];
-  int   errs [NCFG*3];
+  logic [NCFG*3-1:0] done;
+  int                errs [NCFG*3];
 
   for (genvar c = 0; c < NCFG; c++) begin : g_cfg
     for (genvar m = 0; m < 3; m++) begin : g_mode
-      ip_case #(.BUS_W(CB[c]), .F0(CF[c]), .PW0(CP[c]), .MODE(m), .NIMG(m == 0 ? 12 : 30)) u (
+      ip_case #(.BUS_W(CB[c]), .F0(CF[c]), .MODE(m), .NIMG(m == 0 ? 12 : 30)) u (
         .clk(clk), .done(done[c*3+m]), .errors(errs[c*3+m]));
     end
   end
 
   int total;
   initial begin
-    wait (&{done[0], done[1], done[2], done[3], done[4], done[5], done[6], done[7], done[8],
-            done[9], done[10], done[11], done[12], done[13], done[14]});
+    wait (&done);
     total = 0;
     for (int i = 0; i < NCFG*3; i++) total += errs[i];
     if (total == 0) $display("SUCCESS: tb_input_packer");

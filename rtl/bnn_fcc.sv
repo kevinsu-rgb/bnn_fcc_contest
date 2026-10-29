@@ -5,6 +5,8 @@
 // Layer l (l = 0..L-1, L = TOTAL_LAYERS-1) has fan-in F = TOPOLOGY[l], N = TOPOLOGY[l+1] neurons,
 // effective parallelism PN = min(PARALLEL_NEURONS[l], N); input width PW = min(PARALLEL_INPUTS, F) for
 // layer 0 (first hidden layer) and PW = F (whole fan-in, one pass) for layers >= 1.
+// input_packer writes each image beat's K_IN binarized lanes (pixel i = lane i % K_IN of beat i / K_IN,
+// TKEEP = 0 lanes stored as 0) as one layer-0 ping-pong chunk.
 // g_layer[l] holds layer l's input ping-pong buffer (written by input_packer or layer l-1), its
 // config writer and its bnn_layer.
 // Glue:
@@ -60,7 +62,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
 );
     localparam int L     = TOTAL_LAYERS - 1;                       // non-input layers
     localparam int F0    = TOPOLOGY[0];
-    localparam int PW0   = imin(PARALLEL_INPUTS, F0);
+    localparam int K_IN  = INPUT_BUS_WIDTH / INPUT_DATA_WIDTH;     // pixels per image beat
     localparam int F_O   = TOPOLOGY[L - 1];                        // output layer
     localparam int N_O   = TOPOLOGY[L];
     localparam int PN_O  = imin(PARALLEL_NEURONS[L - 1], N_O);
@@ -148,11 +150,11 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     logic                          accept_new_q;
     logic [1:0]                    l0_full;     // layer-0 ping-pong full flags (driven in g_layer[0])
     logic                          ip_wr_en, ip_wr_bank, ip_commit_en, ip_commit_bank, ip_mid;
-    logic [bits(cdiv(F0,PW0))-1:0] ip_wr_idx;
-    logic [PW0-1:0]                ip_wr_data;
+    logic [bits(cdiv(F0,K_IN))-1:0] ip_wr_idx;
+    logic [K_IN-1:0]                ip_wr_data;
 
     input_packer #(
-        .DATA_W(INPUT_DATA_WIDTH), .BUS_W(INPUT_BUS_WIDTH), .F0(F0), .PW0(PW0)
+        .DATA_W(INPUT_DATA_WIDTH), .BUS_W(INPUT_BUS_WIDTH), .F0(F0)
     ) u_in (
         .clk(clk), .rst(rst),
         .s_valid(data_in_valid), .s_ready(data_in_ready), .s_data(data_in_data),
@@ -171,8 +173,8 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         localparam int  N_L      = TOPOLOGY[l + 1];
         localparam int  PN_L     = imin(PARALLEL_NEURONS[l], N_L);
         localparam int  PW_L     = (l == 0) ? imin(PARALLEL_INPUTS, F_L) : F_L;
-        // producer chunk width: layer-0 words from input_packer, else the previous layer's PN
-        localparam int  WRW_L    = (l == 0) ? PW_L : imin(PARALLEL_NEURONS[(l == 0) ? 0 : l - 1], F_L);
+        // producer chunk width: layer-0 image beats (K_IN lanes) from input_packer, else the previous layer's PN
+        localparam int  WRW_L    = (l == 0) ? K_IN : imin(PARALLEL_NEURONS[(l == 0) ? 0 : l - 1], F_L);
         localparam int  GROUPS_L = cdiv(N_L, PN_L);
         localparam int  PASSES_L = cdiv(F_L, PW_L);
         localparam bit  IS_OUT   = (l == L - 1);
