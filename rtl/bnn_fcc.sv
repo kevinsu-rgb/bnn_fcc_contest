@@ -26,13 +26,13 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     parameter int TOTAL_LAYERS = 4,  // Includes input, hidden, and output
     parameter int TOPOLOGY[TOTAL_LAYERS] = '{0: 784, 1: 256, 2: 256, 3: 10, default: 0},  // 0: input, TOTAL_LAYERS-1: output
 
-    parameter int PARALLEL_INPUTS = 8,
-    parameter int PARALLEL_NEURONS[TOTAL_LAYERS-1] = '{default: 8},
+    parameter int PARALLEL_INPUTS = 66,
+    parameter int PARALLEL_NEURONS[TOTAL_LAYERS-1] = '{0: 32, 1: 3, default: 1},
 
     parameter int    POPCOUNT_LEVELS_PER_STAGE = 3,
     parameter int    ARGMAX_LEVELS_PER_STAGE   = 2,
     parameter int    OUT_FIFO_DEPTH            = 4,
-    parameter string RAM_STYLE                 = "auto"
+    parameter string RAM_STYLE                 = "distributed"
 ) (
     input logic clk,
     input logic rst,

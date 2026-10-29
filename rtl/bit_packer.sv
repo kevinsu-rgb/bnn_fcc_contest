@@ -1,9 +1,11 @@
 // Packs variable-width LSB-first bit groups into fixed OUT_W-bit words.
 // Consumer always accepts. in_ready depends on registered state only.
+// MASK_IN=0: caller guarantees in_bits[i] == 0 for i >= in_count (skips the input mask).
 module bit_packer import bnn_fcc_pkg::*; #(
-  parameter int IN_W  = 8,
-  parameter int OUT_W = 8,
-  parameter bit PAD   = 1'b0
+  parameter int IN_W    = 8,
+  parameter int OUT_W   = 8,
+  parameter bit PAD     = 1'b0,
+  parameter bit MASK_IN = 1'b1
 ) (
   input  logic                     clk,
   input  logic                     rst,
@@ -47,7 +49,7 @@ module bit_packer import bnn_fcc_pkg::*; #(
       out_word[i] = (emit || int'(cnt_q) > i) ? buf_q[i] : PAD;
 
     for (int i = 0; i < IN_W; i++)
-      in_masked[i] = in_bits[i] && (i < int'(in_count));
+      in_masked[i] = in_bits[i] && (!MASK_IN || i < int'(in_count));
     app_buf = BUF_W'(in_masked) << post_cnt;
   end
 
