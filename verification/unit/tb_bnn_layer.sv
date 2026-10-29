@@ -23,13 +23,13 @@ module bl_case import bnn_fcc_pkg::*; #(
   localparam int LANE_W    = bits(PN);
   localparam int WADDR_W   = bits(GP);
   localparam int TADDR_W   = bits(GROUPS);
-  localparam int IN_IDX_W  = bits(PASSES);
-  localparam int OUT_IDX_W = bits(GROUPS);
+  localparam int NG        = cdiv(PN, 8);    // operand copies (lane groups of 8)
   localparam int NPL       = np_latency(PW, 3);
   localparam int NA        = NIMG / 2;
   // A no-bubble opportunity needs the producer to refill a bank (PASSES cycles) within one image and,
   // for hidden layers, the previous output bank to be committed and released within one image.
-  localparam bit NB_REQ    = (GP >= PASSES + 1) && (IS_OUTPUT || GP >= NPL + 4);
+  // (issue -> output commit is 2 (read) + NPL + 1 (result register) cycles)
+  localparam bit NB_REQ    = (GP >= PASSES + 1) && (IS_OUTPUT || GP >= NPL + 5);
 
   logic                 rst = 1'b1;
   // config ports
@@ -43,21 +43,21 @@ module bl_case import bnn_fcc_pkg::*; #(
   logic [THR_W-1:0]     t_data = '0;
   // input ping-pong
   logic                 i_wr_en = 1'b0, i_wr_bank = 1'b0;
-  logic [IN_IDX_W-1:0]  i_wr_idx = '0;
+  logic [PASSES-1:0]    i_wr_oh = '0;
   logic [PW-1:0]        i_wr_data = '0;
   logic                 i_commit_en = 1'b0, i_commit_bank = 1'b0;
   logic [1:0]           in_full;
   logic                 in_rd_bank;
-  logic [IN_IDX_W-1:0]  in_rd_idx;
-  logic [PW-1:0]        in_rd_data;
+  logic                 in_rd_adv;
+  logic [NG-1:0][PW-1:0] in_rd_data;
   logic                 in_rls_en, in_rls_bank;
   // output side
   logic [1:0]           out_full;
   logic                 out_wr_en, out_wr_bank;
-  logic [OUT_IDX_W-1:0] out_wr_idx;
+  logic [GROUPS-1:0]    out_wr_oh;
   logic [PN-1:0]        out_wr_data;
   logic                 out_commit_en, out_commit_bank;
-  logic                 o_rd_bank = 1'b0;
+  logic                 o_rd_bank = 1'b0, o_rd_adv = 1'b0;
   logic                 o_rls_en = 1'b0, o_rls_bank = 1'b0;
   logic [N-1:0]         o_rd_data;
   logic                 start_ok = IS_OUTPUT ? 1'b0 : 1'b1;
@@ -72,29 +72,29 @@ module bl_case import bnn_fcc_pkg::*; #(
     .clk(clk), .rst(rst),
     .w_we(w_we), .w_lane(w_lane), .w_addr(w_addr), .w_data(w_data),
     .t_we(t_we), .t_lane(t_lane), .t_addr(t_addr), .t_data(t_data),
-    .in_full(in_full), .in_rd_bank(in_rd_bank), .in_rd_idx(in_rd_idx),
+    .in_full(in_full), .in_rd_bank(in_rd_bank), .in_rd_adv(in_rd_adv),
     .in_rd_data(in_rd_data), .in_rls_en(in_rls_en), .in_rls_bank(in_rls_bank),
-    .out_full(out_full), .out_wr_en(out_wr_en), .out_wr_bank(out_wr_bank), .out_wr_idx(out_wr_idx),
+    .out_full(out_full), .out_wr_en(out_wr_en), .out_wr_bank(out_wr_bank), .out_wr_oh(out_wr_oh),
     .out_wr_data(out_wr_data), .out_commit_en(out_commit_en), .out_commit_bank(out_commit_bank),
     .start_ok(start_ok), .res_valid(res_valid), .res_counts(res_counts),
     .res_mask(res_mask), .res_last(res_last),
     .img_start(img_start), .busy(busy)
   );
 
-  pingpong_buf #(.NBITS(F), .WR_W(PW), .RD_W(PW)) u_in (
+  pingpong_buf #(.NBITS(F), .WR_W(PW), .RD_W(PW), .RD_COPIES(NG)) u_in (
     .clk(clk), .rst(rst),
-    .wr_en(i_wr_en), .wr_bank(i_wr_bank), .wr_idx(i_wr_idx), .wr_data(i_wr_data),
+    .wr_en(i_wr_en), .wr_bank(i_wr_bank), .wr_oh(i_wr_oh), .wr_data(i_wr_data),
     .commit_en(i_commit_en), .commit_bank(i_commit_bank),
-    .rd_bank(in_rd_bank), .rd_idx(in_rd_idx), .rd_data(in_rd_data),
+    .rd_adv(in_rd_adv), .rd_bank(in_rd_bank), .rd_data(in_rd_data),
     .rls_en(in_rls_en), .rls_bank(in_rls_bank), .full(in_full)
   );
 
   if (!IS_OUTPUT) begin : g_out_pp
     pingpong_buf #(.NBITS(N), .WR_W(PN), .RD_W(N)) u_out (
       .clk(clk), .rst(rst),
-      .wr_en(out_wr_en), .wr_bank(out_wr_bank), .wr_idx(out_wr_idx), .wr_data(out_wr_data),
+      .wr_en(out_wr_en), .wr_bank(out_wr_bank), .wr_oh(out_wr_oh), .wr_data(out_wr_data),
       .commit_en(out_commit_en), .commit_bank(out_commit_bank),
-      .rd_bank(o_rd_bank), .rd_idx(1'b0), .rd_data(o_rd_data),
+      .rd_adv(o_rd_adv), .rd_bank(o_rd_bank), .rd_data(o_rd_data),
       .rls_en(o_rls_en), .rls_bank(o_rls_bank), .full(out_full)
     );
   end else begin : g_no_out_pp
@@ -205,18 +205,18 @@ module bl_case import bnn_fcc_pkg::*; #(
     end else shuffle(PASSES);
     for (int e = 0; e < PASSES; e++) begin
       while (!fast && $urandom_range(2, 0) == 0) begin
-        i_wr_en <= 1'b0; i_wr_bank <= $urandom; i_wr_idx <= $urandom; i_wr_data <= rnd_word();
+        i_wr_en <= 1'b0; i_wr_bank <= $urandom; i_wr_oh <= PASSES'(1) << $urandom_range(PASSES - 1, 0); i_wr_data <= rnd_word();
         @(negedge clk);
       end
       c = order[e];
       d = rnd_word();   // bits >= F are garbage; the ping-pong drops them
       for (int k = 0; k < PW; k++) if (c * PW + k < F) d[k] = img[i][c * PW + k];
-      i_wr_en <= 1'b1; i_wr_bank <= b[0]; i_wr_idx <= c; i_wr_data <= d;
+      i_wr_en <= 1'b1; i_wr_bank <= b[0]; i_wr_oh <= PASSES'(1) << c; i_wr_data <= d;
       i_commit_en <= commit_last && (e == PASSES - 1); i_commit_bank <= b[0];
       @(negedge clk);
       i_commit_en <= 1'b0;
     end
-    i_wr_en <= 1'b0; i_wr_idx <= $urandom;
+    i_wr_en <= 1'b0; i_wr_oh <= PASSES'(1) << $urandom_range(PASSES - 1, 0);
   endtask
 
   task automatic commit_bank(input int b);
@@ -251,16 +251,18 @@ module bl_case import bnn_fcc_pkg::*; #(
     end
   endtask
 
-  // ---------------- hidden-layer consumer: reads the whole output bank in one read and releases it
+  // ---------------- hidden-layer consumer: reads the whole output bank in one read (data 2 cycles
+  // after the advance) and releases it with the read
   task automatic consume();
     int b;
     for (int i = 0; i < NIMG; i++) begin
       b = i % 2;
       while (!out_full[b]) @(negedge clk);
       if (i < NA) repeat ($urandom_range(200, 0)) @(negedge clk);
-      o_rd_bank <= b[0]; o_rls_en <= 1'b1; o_rls_bank <= b[0];
+      o_rd_adv <= 1'b1; o_rd_bank <= b[0]; o_rls_en <= 1'b1; o_rls_bank <= b[0];
       @(negedge clk);
-      o_rls_en <= 1'b0; o_rls_bank <= $urandom; o_rd_bank <= $urandom;
+      o_rd_adv <= 1'b0; o_rls_en <= 1'b0; o_rls_bank <= $urandom; o_rd_bank <= $urandom;
+      @(negedge clk);
       for (int n = 0; n < N; n++)
         if (o_rd_data[n] !== (cnt[i][n] >= thr[n]))
           fail($sformatf("consumer img %0d neuron %0d: got %b exp %b (cnt %0d thr %0d)",
@@ -326,7 +328,7 @@ module bl_case import bnn_fcc_pkg::*; #(
         if (out_wr_en === 1'b1) begin
           if (n_done >= n_start) fail("output write for an image not started");
           if (out_wr_bank !== 1'(n_done % 2)) fail($sformatf("img %0d written to wrong bank", n_done));
-          if (int'(out_wr_idx) !== out_g) fail($sformatf("img %0d: chunk %0d exp %0d", n_done, out_wr_idx, out_g));
+          if (out_wr_oh !== (GROUPS'(1) << out_g)) fail($sformatf("img %0d: chunk one-hot %b exp chunk %0d", n_done, out_wr_oh, out_g));
           for (int k = 0; k < PN; k++) begin
             n = out_g * PN + k;
             if (n >= N) begin

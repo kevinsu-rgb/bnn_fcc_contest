@@ -1,5 +1,7 @@
 // Self-checking testbench for input_packer (position-based TKEEP). A pingpong_buf captures the writes;
 // the TB checks every committed bank against a reference and releases banks after a (random) delay.
+// The write index is a one-hot chunk pointer (wr_oh); the buffer stores writes one cycle after the
+// handshake, so a commit's content is checked two cycles after commit_en.
 // Position rule: pixel i is lane i % K of beat i / K; a TKEEP = 0 lane is stored as a 0 pixel in place.
 // MODE 0: back-to-back full beats, immediate release (throughput check)
 // MODE 1: random valid gaps, full beats + TKEEP-trimmed last beat, kinds: normal/overlong/early
@@ -25,7 +27,7 @@ module ip_case import bnn_fcc_pkg::*; #(
   logic accept_new = 1'b0;
   logic [1:0] buf_full;
   logic wr_en, wr_bank, commit_en, commit_bank, mid_image;
-  logic [bits(NCH)-1:0] wr_idx;
+  logic [NCH-1:0] wr_oh;
   logic [K-1:0] wr_data;
   logic rls_en = 1'b0, rls_bank = 1'b0;
 
@@ -33,15 +35,15 @@ module ip_case import bnn_fcc_pkg::*; #(
     .clk(clk), .rst(rst),
     .s_valid(s_valid), .s_ready(s_ready), .s_data(s_data), .s_keep(s_keep), .s_last(s_last),
     .accept_new(accept_new), .buf_full(buf_full),
-    .wr_en(wr_en), .wr_bank(wr_bank), .wr_idx(wr_idx), .wr_data(wr_data),
+    .wr_en(wr_en), .wr_bank(wr_bank), .wr_oh(wr_oh), .wr_data(wr_data),
     .commit_en(commit_en), .commit_bank(commit_bank), .mid_image(mid_image)
   );
 
   pingpong_buf #(.NBITS(F0), .WR_W(K), .RD_W(K)) pp (
     .clk(clk), .rst(rst),
-    .wr_en(wr_en), .wr_bank(wr_bank), .wr_idx(wr_idx), .wr_data(wr_data),
+    .wr_en(wr_en), .wr_bank(wr_bank), .wr_oh(wr_oh), .wr_data(wr_data),
     .commit_en(commit_en), .commit_bank(commit_bank),
-    .rd_bank(1'b0), .rd_idx('0), .rd_data(),
+    .rd_adv(1'b0), .rd_bank(1'b0), .rd_data(),
     .rls_en(rls_en), .rls_bank(rls_bank), .full(buf_full)
   );
 
@@ -154,37 +156,39 @@ module ip_case import bnn_fcc_pkg::*; #(
   int  chk_idx = 0;
   int  ncommit = 0;
   int  rel_t [2] = '{-1, -1};
-  bit  cm_d = 1'b0;
-  bit  cm_bank_d = 1'b0;
+  bit  cm_d = 1'b0, cm_d2 = 1'b0;
+  bit  cm_bank_d = 1'b0, cm_bank_d2 = 1'b0;
   bit  exp_bank = 1'b0;
   int  settle = 0;
 
   always @(posedge clk) begin : chk
     if (rst) begin
-      rel_t[0] = -1; rel_t[1] = -1; cm_d = 1'b0; rls_en <= 1'b0;
+      rel_t[0] = -1; rel_t[1] = -1; cm_d = 1'b0; cm_d2 = 1'b0; rls_en <= 1'b0;
     end else begin
       if (wr_en && buf_full[wr_bank]) begin
         errors++; $error("%s: write into a full bank", tag);
       end
-      if (wr_en && int'(wr_idx) >= NCH) begin
-        errors++; $error("%s: wr_idx %0d out of range", tag, wr_idx);
+      if (wr_en && !$onehot(wr_oh)) begin
+        errors++; $error("%s: wr_oh %b not one-hot", tag, wr_oh);
       end
-      // delayed content check of the commit seen last cycle
-      if (cm_d) begin
+      // delayed content check of the commit seen two cycles ago (its last write is stored by now)
+      if (cm_d2) begin
         if (chk_idx >= NIMG) begin
           errors++; $error("%s: extra commit", tag);
         end else begin
           for (int j = 0; j < enb[chk_idx]; j++)
-            if (pp.mem[cm_bank_d][j] !== eimg[chk_idx][j]) begin
+            if (pp.mem[cm_bank_d2][j] !== eimg[chk_idx][j]) begin
               errors++;
               $error("%s: image %0d bit %0d exp=%b got=%b", tag, chk_idx, j,
-                     eimg[chk_idx][j], pp.mem[cm_bank_d][j]);
+                     eimg[chk_idx][j], pp.mem[cm_bank_d2][j]);
               break;
             end
           chk_idx++;
         end
-        rel_t[cm_bank_d] = (MODE == 0) ? 0 : $urandom_range(0, 12);
+        rel_t[cm_bank_d2] = (MODE == 0) ? 0 : $urandom_range(0, 12);
       end
+      cm_d2 = cm_d;
+      cm_bank_d2 = cm_bank_d;
       cm_d = commit_en;
       cm_bank_d = commit_bank;
       if (commit_en) begin

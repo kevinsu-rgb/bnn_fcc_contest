@@ -3,9 +3,12 @@
 // in the same cycle its first (g, p) issues (img_start), as soon as the input bank is full and the
 // output side can take it (hidden: output bank neither full nor awaiting this layer's commit;
 // output layer: start_ok). The next image may start the cycle after the last (g, p) of the previous.
-// Weight RAM (GROUPS*PASSES x PW) and threshold RAM (GROUPS x THR_W) per lane, 1-cycle registered
-// read aligned with the ping-pong read. Results leave through one register stage; the output group
-// index and bank are tracked by counters at the output (results come out in issue order).
+// Read timing: a (g, p) issued in cycle t advances the input ping-pong (2-cycle read: one rd_data copy
+// per group of 8 lanes, valid in t+2). Each lane registers its own copy of the weight/threshold read
+// address in t+1 and reads its weight RAM (GROUPS*PASSES x PW) and threshold RAM (GROUPS x THR_W)
+// with a registered read, so x, w and thr reach the neuron processor together in t+2.
+// Results leave through one register stage; the output group (one-hot) and bank are tracked at the
+// output (results come out in issue order).
 // Layout contract: neuron n -> lane n % PN, group n / PN; weight word at w_addr = group*PASSES + p,
 // bit k = weight index p*PW + k (pad bits are 1); threshold at t_addr = group.
 module bnn_layer import bnn_fcc_pkg::*; #(
@@ -33,15 +36,15 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   // input ping-pong (consumer side)
   input  logic [1:0]                              in_full,
   output logic                                    in_rd_bank,
-  output logic [bits(cdiv(F,PW))-1:0]             in_rd_idx,
-  input  logic [PW-1:0]                           in_rd_data,
+  output logic                                    in_rd_adv,
+  input  logic [cdiv(PN,8)-1:0][PW-1:0]           in_rd_data,
   output logic                                    in_rls_en,
   output logic                                    in_rls_bank,
   // hidden-layer output ping-pong (producer side); out_full tied to 0 when IS_OUTPUT
   input  logic [1:0]                              out_full,
   output logic                                    out_wr_en,
   output logic                                    out_wr_bank,
-  output logic [bits(cdiv(N,PN))-1:0]             out_wr_idx,
+  output logic [cdiv(N,PN)-1:0]                   out_wr_oh,
   output logic [PN-1:0]                           out_wr_data,
   output logic                                    out_commit_en,
   output logic                                    out_commit_bank,
@@ -63,6 +66,7 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   localparam int TADDR_W   = bits(GROUPS);
   localparam int IN_IDX_W  = bits(PASSES);
   localparam int OUT_IDX_W = bits(GROUPS);
+  localparam int LG        = 8;                              // lanes per operand copy
   localparam int NPL       = np_latency(PW, POPCOUNT_LEVELS_PER_STAGE);
   localparam int LAST_LANES = N - (GROUPS - 1) * PN;          // valid lanes in the last group
   localparam logic [PN-1:0] LAST_MASK = {PN{1'b1}} >> (PN - LAST_LANES);
@@ -85,7 +89,7 @@ module bnn_layer import bnn_fcc_pkg::*; #(
 
   assign img_start   = start;
   assign in_rd_bank  = rd_bank;
-  assign in_rd_idx   = p_r;
+  assign in_rd_adv   = issue;
   assign in_rls_en   = issue & last_gp;   // read issued this cycle still returns this bank's data
   assign in_rls_bank = rd_bank;
 
@@ -118,18 +122,20 @@ module bnn_layer import bnn_fcc_pkg::*; #(
     end
   end
 
-  // ---------------- side-band for the NP input stage (aligned with the 1-cycle RAM/ping-pong read)
-  logic           s1_first, s1_last;
-  logic [NPL+1:0] vpipe;   // vpipe[0]: NP input valid; vpipe[NPL+1]: result register stage
+  // ---------------- side-band for the NP input stage (aligned with the 2-cycle ping-pong/RAM read)
+  logic           s1_first, s1_last, s2_first, s2_last;
+  logic [NPL+2:0] vpipe;   // vpipe[1]: NP input valid; vpipe[NPL+2]: result register stage
 
   always_ff @(posedge clk) begin
     s1_first <= (p_r == '0);
     s1_last  <= last_p;
+    s2_first <= s1_first;
+    s2_last  <= s1_last;
   end
 
   always_ff @(posedge clk) begin
     if (rst) vpipe <= '0;
-    else     vpipe <= {vpipe[NPL:0], issue};
+    else     vpipe <= {vpipe[NPL+1:0], issue};
   end
 
   assign busy = issue | (|vpipe);
@@ -145,34 +151,40 @@ module bnn_layer import bnn_fcc_pkg::*; #(
     logic             w_lane_we;
     logic [PW-1:0]    w_rd;
     logic [THR_W-1:0] t_rd;
+    // per-lane read address copies (kept: identical across lanes, each drives only this lane's RAMs)
+    (* keep = "true" *) logic [WADDR_W-1:0] la_q;
 
     assign w_lane_we = w_we & (w_lane == LANE_W'(k));
+
+    always_ff @(posedge clk) la_q <= waddr_r;
 
     if (RAM_STYLE == "block") begin : g_wram
       (* ram_style = "block" *) logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
         if (w_lane_we) wmem[w_addr] <= w_data;
-        w_rd <= wmem[waddr_r];
+        w_rd <= wmem[la_q];
       end
     end else if (RAM_STYLE == "distributed") begin : g_wram
       (* ram_style = "distributed" *) logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
         if (w_lane_we) wmem[w_addr] <= w_data;
-        w_rd <= wmem[waddr_r];
+        w_rd <= wmem[la_q];
       end
     end else begin : g_wram
       logic [PW-1:0] wmem [GROUPS*PASSES];
       always_ff @(posedge clk) begin
         if (w_lane_we) wmem[w_addr] <= w_data;
-        w_rd <= wmem[waddr_r];
+        w_rd <= wmem[la_q];
       end
     end
 
     if (!IS_OUTPUT) begin : g_tram
       logic [THR_W-1:0] tmem [GROUPS];
+      (* keep = "true" *) logic [TADDR_W-1:0] lg_q;
+      always_ff @(posedge clk) lg_q <= TADDR_W'(g_r);
       always_ff @(posedge clk) begin
         if (t_we && t_lane == LANE_W'(k)) tmem[t_addr] <= t_data;
-        t_rd <= tmem[TADDR_W'(g_r)];
+        t_rd <= tmem[lg_q];
       end
     end else begin : g_no_tram
       assign t_rd = '0;
@@ -183,32 +195,32 @@ module bnn_layer import bnn_fcc_pkg::*; #(
       .POPCOUNT_LEVELS_PER_STAGE(POPCOUNT_LEVELS_PER_STAGE)
     ) u_np (
       .clk(clk), .rst(rst),
-      .in_valid(vpipe[0]), .first_pass(s1_first), .last_pass(s1_last),
-      .x(in_rd_data), .w(w_rd), .thr(t_rd),
+      .in_valid(vpipe[1]), .first_pass(s2_first), .last_pass(s2_last),
+      .x(in_rd_data[k / LG]), .w(w_rd), .thr(t_rd),
       .out_valid(np_ov[k]), .out_y(np_y[k]), .out_acc(np_acc[k*ACC_W +: ACC_W])
     );
   end
 
-  // ---------------- result stage: group/bank counters and one output register
+  // ---------------- result stage: one-hot group pointer, bank, and one output register
   logic                 np_valid;    // all lanes are in lockstep; lane 0 stands for all
-  logic [OUT_IDX_W-1:0] g_o;
+  logic [GROUPS-1:0]    oh_o;
   logic                 bank_o, last_o;
   logic [PN-1:0]        mask_o;
   logic                 o_valid, o_last;
 
   assign np_valid = np_ov[0];
-  assign last_o   = (g_o == OUT_IDX_W'(GROUPS - 1));
+  assign last_o   = oh_o[GROUPS-1];
   assign mask_o   = last_o ? LAST_MASK : '1;
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      g_o     <= '0;
+      oh_o    <= GROUPS'(1);
       bank_o  <= 1'b0;
       o_valid <= 1'b0;
     end else begin
       o_valid <= np_valid;
       if (np_valid) begin
-        g_o <= last_o ? '0 : g_o + 1'b1;
+        oh_o <= last_o ? GROUPS'(1) : (oh_o << 1);
         if (last_o) bank_o <= ~bank_o;
       end
     end
@@ -228,18 +240,18 @@ module bnn_layer import bnn_fcc_pkg::*; #(
   if (!IS_OUTPUT) begin : g_hidden_out
     logic [PN-1:0]        o_y;
     logic                 o_bank;
-    logic [OUT_IDX_W-1:0] o_idx;
+    logic [GROUPS-1:0]    o_oh;
     always_ff @(posedge clk) begin
       if (np_valid) begin
         o_y    <= np_y & mask_o;   // invalid lanes forced to 0
         o_bank <= bank_o;
-        o_idx  <= g_o;
+        o_oh   <= oh_o;
       end
     end
 
     assign out_wr_en       = o_valid;
     assign out_wr_bank     = o_bank;
-    assign out_wr_idx      = o_idx;
+    assign out_wr_oh       = o_oh;
     assign out_wr_data     = o_y;
     assign out_commit_en   = o_valid & o_last;
     assign out_commit_bank = o_bank;
@@ -263,7 +275,7 @@ module bnn_layer import bnn_fcc_pkg::*; #(
     assign res_last        = o_valid & o_last;
     assign out_wr_en       = 1'b0;
     assign out_wr_bank     = 1'b0;
-    assign out_wr_idx      = '0;
+    assign out_wr_oh       = '0;
     assign out_wr_data     = '0;
     assign out_commit_en   = 1'b0;
     assign out_commit_bank = 1'b0;

@@ -1,8 +1,9 @@
 // AXI4-Stream image input -> layer-0 ping-pong buffer (position-based TKEEP).
 // Pixel i is lane i % K of beat i / K. Each accepted beat writes its K binarized lanes (pixel MSB,
 // 0 where TKEEP = 0) as ping-pong chunk wr_idx++, and the TLAST beat commits the bank in the same
-// cycle. Overlong images are clipped: beats after chunk NCH-1 are not written (ovf_q), and bits
-// >= F0 in the last chunk are not stored by the ping-pong buffer.
+// cycle. The chunk index is a one-hot pointer (wr_oh). Overlong images are clipped: beats after
+// chunk NCH-1 are not written (ovf_q), and bits >= F0 in the last chunk are not stored by the
+// ping-pong buffer.
 // One beat per cycle; s_ready depends on registered state only.
 module input_packer import bnn_fcc_pkg::*; #(
   parameter int DATA_W = 8,
@@ -20,7 +21,7 @@ module input_packer import bnn_fcc_pkg::*; #(
   input  logic [1:0]                 buf_full,
   output logic                       wr_en,
   output logic                       wr_bank,
-  output logic [bits(cdiv(F0,BUS_W/DATA_W))-1:0] wr_idx,
+  output logic [cdiv(F0,BUS_W/DATA_W)-1:0] wr_oh,
   output logic [BUS_W/DATA_W-1:0]    wr_data,
   output logic                       commit_en,
   output logic                       commit_bank,
@@ -30,9 +31,9 @@ module input_packer import bnn_fcc_pkg::*; #(
   localparam int KB  = DATA_W / 8;
   localparam int NCH = cdiv(F0, K);
 
-  logic                 mid_q, bank_q, ovf_q;
-  logic [bits(NCH)-1:0] idx_q;
-  logic                 gate, accept;
+  logic           mid_q, bank_q, ovf_q;
+  logic [NCH-1:0] oh_q;   // one-hot chunk pointer
+  logic           gate, accept;
 
   for (genvar j = 0; j < K; j++) begin : g_lane
     assign wr_data[j] = s_data[j*DATA_W + DATA_W - 1] && (&s_keep[j*KB +: KB]);
@@ -44,7 +45,7 @@ module input_packer import bnn_fcc_pkg::*; #(
 
   assign wr_en       = accept && !ovf_q;
   assign wr_bank     = bank_q;
-  assign wr_idx      = idx_q;
+  assign wr_oh       = oh_q;
   assign commit_en   = accept && s_last;
   assign commit_bank = bank_q;
   assign mid_image   = mid_q;
@@ -53,18 +54,18 @@ module input_packer import bnn_fcc_pkg::*; #(
     if (rst) begin
       mid_q  <= 1'b0;
       bank_q <= 1'b0;
-      idx_q  <= '0;
+      oh_q   <= NCH'(1);
       ovf_q  <= 1'b0;
     end else if (commit_en) begin
       mid_q  <= 1'b0;
       bank_q <= ~bank_q;
-      idx_q  <= '0;
+      oh_q   <= NCH'(1);
       ovf_q  <= 1'b0;
     end else if (accept) begin
       mid_q <= 1'b1;
       if (!ovf_q) begin
-        idx_q <= idx_q + 1'b1;
-        if (int'(idx_q) == NCH - 1) ovf_q <= 1'b1;
+        oh_q <= oh_q << 1;
+        if (oh_q[NCH-1]) ovf_q <= 1'b1;
       end
     end
   end

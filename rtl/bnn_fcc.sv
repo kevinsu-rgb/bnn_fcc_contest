@@ -152,7 +152,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     logic                          accept_new_q;
     logic [1:0]                    l0_full;     // layer-0 ping-pong full flags (driven in g_layer[0])
     logic                          ip_wr_en, ip_wr_bank, ip_commit_en, ip_commit_bank, ip_mid;
-    logic [bits(cdiv(F0,K_IN))-1:0] ip_wr_idx;
+    logic [cdiv(F0,K_IN)-1:0]       ip_wr_oh;    // one-hot chunk select
     logic [K_IN-1:0]                ip_wr_data;
 
     input_packer #(
@@ -162,7 +162,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         .s_valid(data_in_valid), .s_ready(data_in_ready), .s_data(data_in_data),
         .s_keep(data_in_keep), .s_last(data_in_last),
         .accept_new(accept_new_q), .buf_full(l0_full),
-        .wr_en(ip_wr_en), .wr_bank(ip_wr_bank), .wr_idx(ip_wr_idx), .wr_data(ip_wr_data),
+        .wr_en(ip_wr_en), .wr_bank(ip_wr_bank), .wr_oh(ip_wr_oh), .wr_data(ip_wr_data),
         .commit_en(ip_commit_en), .commit_bank(ip_commit_bank), .mid_image(ip_mid)
     );
 
@@ -180,21 +180,21 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         localparam int  GROUPS_L = cdiv(N_L, PN_L);
         localparam int  PASSES_L = cdiv(F_L, PW_L);
         localparam bit  IS_OUT   = (l == L - 1);
+        localparam int  NCP_L    = cdiv(PN_L, 8);   // operand copies (one per 8 lanes)
 
         // input ping-pong
         logic [1:0]                         in_full;
         logic                               pp_wr_en, pp_wr_bank, pp_commit_en, pp_commit_bank;
-        logic [bits(cdiv(F_L,WRW_L))-1:0]   pp_wr_idx;
+        logic [cdiv(F_L,WRW_L)-1:0]         pp_wr_oh;
         logic [WRW_L-1:0]                   pp_wr_data;
-        logic                               rd_bank, rls_en, rls_bank;
-        logic [bits(PASSES_L)-1:0]          rd_idx;
-        logic [PW_L-1:0]                    rd_data;
+        logic                               rd_bank, rd_adv, rls_en, rls_bank;
+        logic [NCP_L-1:0][PW_L-1:0]         rd_data;
 
         // layer outputs (hidden: next ping-pong; output: result stream)
         /* verilator lint_off UNUSEDSIGNAL */   // unused half depends on IS_OUT
         logic [1:0]                         out_full;
         logic                               out_wr_en, out_wr_bank, out_commit_en, out_commit_bank;
-        logic [bits(GROUPS_L)-1:0]          out_wr_idx;
+        logic [GROUPS_L-1:0]                out_wr_oh;
         logic [PN_L-1:0]                    out_wr_data;
         logic                               start_ok, res_valid, res_last, img_start, busy;
         logic [PN_L*bits(F_L+1)-1:0]        res_counts;
@@ -213,7 +213,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         if (l == 0) begin : g_src
             assign pp_wr_en       = ip_wr_en;
             assign pp_wr_bank     = ip_wr_bank;
-            assign pp_wr_idx      = ip_wr_idx;
+            assign pp_wr_oh       = ip_wr_oh;
             assign pp_wr_data     = ip_wr_data;
             assign pp_commit_en   = ip_commit_en;
             assign pp_commit_bank = ip_commit_bank;
@@ -221,7 +221,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
         end else begin : g_src
             assign pp_wr_en       = g_layer[l-1].out_wr_en;
             assign pp_wr_bank     = g_layer[l-1].out_wr_bank;
-            assign pp_wr_idx      = g_layer[l-1].out_wr_idx;
+            assign pp_wr_oh       = g_layer[l-1].out_wr_oh;
             assign pp_wr_data     = g_layer[l-1].out_wr_data;
             assign pp_commit_en   = g_layer[l-1].out_commit_en;
             assign pp_commit_bank = g_layer[l-1].out_commit_bank;
@@ -235,11 +235,11 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             assign start_ok = 1'b1;
         end
 
-        pingpong_buf #(.NBITS(F_L), .WR_W(WRW_L), .RD_W(PW_L)) u_pp (
+        pingpong_buf #(.NBITS(F_L), .WR_W(WRW_L), .RD_W(PW_L), .RD_COPIES(NCP_L)) u_pp (
             .clk(clk), .rst(rst),
-            .wr_en(pp_wr_en), .wr_bank(pp_wr_bank), .wr_idx(pp_wr_idx), .wr_data(pp_wr_data),
+            .wr_en(pp_wr_en), .wr_bank(pp_wr_bank), .wr_oh(pp_wr_oh), .wr_data(pp_wr_data),
             .commit_en(pp_commit_en), .commit_bank(pp_commit_bank),
-            .rd_bank(rd_bank), .rd_idx(rd_idx), .rd_data(rd_data),
+            .rd_adv(rd_adv), .rd_bank(rd_bank), .rd_data(rd_data),
             .rls_en(rls_en), .rls_bank(rls_bank), .full(in_full)
         );
 
@@ -264,10 +264,10 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             .clk(clk), .rst(rst),
             .w_we(w_we), .w_lane(w_lane), .w_addr(w_addr), .w_data(w_data),
             .t_we(t_we), .t_lane(t_lane), .t_addr(t_addr), .t_data(t_data),
-            .in_full(in_full), .in_rd_bank(rd_bank), .in_rd_idx(rd_idx), .in_rd_data(rd_data),
+            .in_full(in_full), .in_rd_bank(rd_bank), .in_rd_adv(rd_adv), .in_rd_data(rd_data),
             .in_rls_en(rls_en), .in_rls_bank(rls_bank),
             .out_full(out_full), .out_wr_en(out_wr_en), .out_wr_bank(out_wr_bank),
-            .out_wr_idx(out_wr_idx), .out_wr_data(out_wr_data),
+            .out_wr_oh(out_wr_oh), .out_wr_data(out_wr_data),
             .out_commit_en(out_commit_en), .out_commit_bank(out_commit_bank),
             .start_ok(start_ok), .res_valid(res_valid), .res_counts(res_counts),
             .res_mask(res_mask), .res_last(res_last), .img_start(img_start), .busy(busy)
