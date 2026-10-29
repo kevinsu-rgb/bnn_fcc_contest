@@ -132,14 +132,15 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
 
     logic       pipeline_idle_q, cfg_busy, configured;
     logic       msg_start, msg_abort, msg_type, pl_valid, pl_ready;
-    logic [7:0] msg_layer, pl_byte;
+    logic [7:0] pl_byte;
+    logic [L-1:0] msg_sel;       // registered one-hot layer select
 
     cfg_parser #(.TOTAL_LAYERS(TOTAL_LAYERS), .TOPOLOGY(TOPOLOGY)) u_parser (
         .clk(clk), .rst(rst),
         .s_valid(sr_valid), .s_ready(sr_ready), .s_byte(sr_byte), .s_null(sr_null),
         .s_beat_last(sr_beat_last), .drop_rest(drop_rest),
         .pipeline_idle(pipeline_idle_q), .cfg_busy(cfg_busy), .configured(configured),
-        .msg_start(msg_start), .msg_abort(msg_abort), .msg_layer(msg_layer), .msg_type(msg_type),
+        .msg_start(msg_start), .msg_abort(msg_abort), .msg_sel(msg_sel), .msg_type(msg_type),
         .pl_valid(pl_valid), .pl_ready(pl_ready), .pl_byte(pl_byte)
     );
 
@@ -241,7 +242,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             .rls_en(rls_en), .rls_bank(rls_bank), .full(in_full)
         );
 
-        assign cw_sel[l] = (msg_layer == 8'(l));
+        assign cw_sel[l] = msg_sel[l];
         assign cw_start  = msg_start && cw_sel[l];
         assign cw_abort  = msg_abort && cw_sel[l];
         assign cw_valid  = pl_valid && cw_sel[l];

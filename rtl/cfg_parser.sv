@@ -1,13 +1,13 @@
 // Configuration message parser: collects the 16-byte little-endian header, validates it against the
 // topology, waits for the compute pipeline to go idle, then routes the payload bytes to the selected
-// layer writer (msg_layer / msg_type) and tracks which weight/threshold memories are loaded.
+// layer writer (msg_sel / msg_type) and tracks which weight/threshold memories are loaded.
 //   HEADER  : 16 bytes; a TLAST (or null item) on any header item discards the header collected so far.
 //             The header is validated on its 16th byte from registered fields (bytes 0..11; the
 //             reserved bytes 12..15 are not stored): valid -> WAIT_IDLE, invalid -> DISCARD
 //             (or straight back to HEADER when total_bytes == 0).
 //   WAIT    : cfg_busy = 1, no bytes accepted; pipeline_idle is honored from the second cycle on.
-//             Then msg_start is pulsed (registered, one cycle, no byte accepted in that cycle) and the
-//             layer's load flag is cleared.
+//             Then msg_start is pulsed (registered, one cycle, no byte accepted in that cycle), msg_sel
+//             (registered one-hot layer select) is loaded and the layer's load flag is cleared.
 //   PAYLOAD : total_bytes bytes to pl_*; the last one asserts drop_rest and sets the load flag.
 //             A TLAST before that (incl. a null item) truncates: msg_abort, the byte carrying TLAST is
 //             not forwarded, the flag stays cleared.
@@ -30,7 +30,7 @@ module cfg_parser import bnn_fcc_pkg::*; #(
   output logic       configured,
   output logic       msg_start,
   output logic       msg_abort,
-  output logic [7:0] msg_layer,
+  output logic [TOTAL_LAYERS-2:0] msg_sel,
   output logic       msg_type,
   output logic       pl_valid,
   input  logic       pl_ready,
@@ -47,7 +47,7 @@ module cfg_parser import bnn_fcc_pkg::*; #(
   logic [31:0]  rem_q;         // payload / discard bytes remaining
   logic         armed_q;       // second and later WAIT cycles
   logic         start_q;       // msg_start
-  logic [7:0]   layer_q;
+  logic [L-1:0] sel_q;         // one-hot layer of the current message
   logic         type_q;
   logic [L-1:0] w_loaded, t_loaded;
 
@@ -101,7 +101,7 @@ module cfg_parser import bnn_fcc_pkg::*; #(
   assign drop_rest = done_now && (state_q == S_PAYLOAD || state_q == S_DISCARD);
   assign msg_abort = hs && (state_q == S_PAYLOAD) && tlast && !done_now;
   assign msg_start = start_q;
-  assign msg_layer = layer_q;
+  assign msg_sel   = sel_q;
   assign msg_type  = type_q;
   assign pl_valid  = (state_q == S_PAYLOAD) && !start_q && s_valid && !s_null && (!tlast || last_cnt);
   assign pl_byte   = s_byte;
@@ -115,14 +115,14 @@ module cfg_parser import bnn_fcc_pkg::*; #(
       hcnt_q   <= '0;
       armed_q  <= 1'b0;
       start_q  <= 1'b0;
-      layer_q  <= '0;
+      sel_q    <= '0;
       type_q   <= 1'b0;
       w_loaded <= '0;
       t_loaded <= '0;
     end else begin
       start_q <= 1'b0;
       if (start_q) begin
-        for (int l = 0; l < L; l++) if (32'(layer_q) == 32'(l)) begin
+        for (int l = 0; l < L; l++) if (sel_q[l]) begin
           if (type_q) t_loaded[l] <= 1'b0;
           else        w_loaded[l] <= 1'b0;
         end
@@ -150,7 +150,7 @@ module cfg_parser import bnn_fcc_pkg::*; #(
           if (armed_q && pipeline_idle) begin
             state_q <= S_PAYLOAD;
             start_q <= 1'b1;
-            layer_q <= h_layer;
+            for (int l = 0; l < L; l++) sel_q[l] <= (h_layer == 8'(l));
             type_q  <= h_type[0];
           end
         end
@@ -158,7 +158,7 @@ module cfg_parser import bnn_fcc_pkg::*; #(
           if (!s_null) rem_q <= rem_q - 1'b1;
           if (done_now) begin
             state_q <= S_HEADER;
-            for (int l = 0; l < L; l++) if (32'(layer_q) == 32'(l)) begin
+            for (int l = 0; l < L; l++) if (sel_q[l]) begin
               if (type_q) t_loaded[l] <= 1'b1;
               else        w_loaded[l] <= 1'b1;
             end

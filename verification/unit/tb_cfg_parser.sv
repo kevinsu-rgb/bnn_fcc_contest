@@ -6,7 +6,7 @@
 //
 // Every cycle the monitor checks: configured and the load flags against a model (cleared at msg_start,
 // set on clean completion); drop_rest / msg_abort only and exactly on the expected handshakes; payload
-// bytes (with msg_layer/msg_type) against the expected queue; pl_valid only inside an accepted message;
+// bytes (with msg_sel/msg_type) against the expected queue; pl_valid only inside an accepted message;
 // msg_start (layer/type) exactly when the WAIT_IDLE rule says (pipeline_idle honored from the second
 // WAIT_IDLE cycle), with pl_valid low in that cycle; s_ready low in WAIT_IDLE; cfg_busy rising only after
 // a valid header and falling only after completion/abort. At every negedge s_valid is flipped for a
@@ -36,7 +36,7 @@ module tb_cfg_parser;
   logic       pipeline_idle = 1'b0;
   logic       cfg_busy, configured;
   logic       msg_start, msg_abort;
-  logic [7:0] msg_layer;
+  logic [L-1:0] msg_sel;
   logic       msg_type;
   logic       pl_valid, pl_ready = 1'b0;
   logic [7:0] pl_byte;
@@ -136,10 +136,10 @@ module tb_cfg_parser;
           errors++; $error("unexpected payload byte %02h", pl_byte);
         end else begin
           p = exp_pl.pop_front();
-          if (pl_byte !== p.b || msg_layer !== 8'(p.layer) || msg_type !== p.typ) begin
+          if (pl_byte !== p.b || msg_sel !== (L'(1) << p.layer) || msg_type !== p.typ) begin
             errors++;
-            $error("payload got %02h L%0d T%0d, expected %02h L%0d T%0d",
-                   pl_byte, msg_layer, msg_type, p.b, p.layer, p.typ);
+            $error("payload got %02h sel %b T%0d, expected %02h L%0d T%0d",
+                   pl_byte, msg_sel, msg_type, p.b, p.layer, p.typ);
           end
         end
       end
@@ -151,11 +151,14 @@ module tb_cfg_parser;
         n_start++;
         if (pl_valid) begin errors++; $error("pl_valid in the msg_start cycle"); end
         if (exp_st.size() == 0) begin
-          errors++; $error("unexpected msg_start L%0d T%0d", msg_layer, msg_type);
+          errors++; $error("unexpected msg_start sel %b T%0d", msg_sel, msg_type);
         end else begin
           st = exp_st.pop_front();
-          if (msg_layer !== 8'(st.layer) || msg_type !== st.typ) begin
-            errors++; $error("msg_start L%0d T%0d, expected L%0d T%0d", msg_layer, msg_type, st.layer, st.typ);
+          if (!$onehot(msg_sel)) begin
+            errors++; $error("msg_sel %b not one-hot at msg_start", msg_sel);
+          end
+          if (msg_sel !== (L'(1) << st.layer) || msg_type !== st.typ) begin
+            errors++; $error("msg_start sel %b T%0d, expected L%0d T%0d", msg_sel, msg_type, st.layer, st.typ);
           end
           if (st.typ) tt[st.layer] = 1'b0;
           else        tw[st.layer] = 1'b0;
