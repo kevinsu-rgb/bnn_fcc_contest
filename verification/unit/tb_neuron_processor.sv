@@ -1,4 +1,7 @@
 // Self-checking testbench for neuron_processor, PW in {1, 8, 66}.
+// Contract: the passes of one neuron arrive in consecutive cycles; idle cycles (garbage on every
+// input) only occur between neurons. Results are checked popcount_latency + 3 cycles after the
+// last-pass input (XNOR register, popcount, accumulate, compare).
 module np_case import bnn_fcc_pkg::*; #(
   parameter int PW = 8
 ) (
@@ -9,7 +12,7 @@ module np_case import bnn_fcc_pkg::*; #(
   localparam int F     = 3 * PW;
   localparam int ACC_W = bits(F + 1);
   localparam int THR_W = bits(F + 2);
-  localparam int LAT   = np_latency(PW, 3);
+  localparam int LAT   = popcount_latency(PW, 3) + 3;
   localparam int NNEUR = 500;
 
   logic             rst = 1'b1;
@@ -92,8 +95,8 @@ module np_case import bnn_fcc_pkg::*; #(
         endcase
       end
     end else if (neuron < NNEUR) begin
-      if ($urandom_range(0, 99) < gap_pct) begin
-        // idle cycle with garbage on all inputs
+      if (pass == 0 && $urandom_range(0, 99) < gap_pct) begin
+        // idle cycle between neurons with garbage on all inputs
         in_valid <= 1'b0; first_pass <= $urandom(); last_pass <= $urandom();
         x <= rnd_bits(); w <= rnd_bits(); thr <= THR_W'($urandom());
       end else begin

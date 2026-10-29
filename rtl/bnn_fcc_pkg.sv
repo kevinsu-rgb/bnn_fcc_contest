@@ -26,9 +26,9 @@ package bnn_fcc_pkg;
     return cdiv(t, lps);
   endfunction
 
-  // Neuron-processor latency: popcount plus one accumulate/compare stage.
+  // Neuron-processor latency: XNOR register, popcount, accumulate stage, compare stage.
   function automatic int np_latency(int w, int lps);
-    return popcount_latency(w, lps) + 1;
+    return popcount_latency(w, lps) + 3;
   endfunction
 
 endpackage

@@ -32,7 +32,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
     parameter int PARALLEL_INPUTS = 66,
     parameter int PARALLEL_NEURONS[TOTAL_LAYERS-1] = '{0: 32, 1: 3, default: 1},
 
-    parameter int    POPCOUNT_LEVELS_PER_STAGE = 3,
+    parameter int    POPCOUNT_LEVELS_PER_STAGE = 2,
     parameter int    ARGMAX_LEVELS_PER_STAGE   = 2,
     parameter int    OUT_FIFO_DEPTH            = 4,
     parameter string RAM_STYLE                 = "distributed"
