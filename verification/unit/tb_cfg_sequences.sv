@@ -1,12 +1,14 @@
 // System tests for bnn_fcc configuration sequencing, reconfiguration, protocol misuse, backpressure
 // and reset. The test flow lives in cfgseq_harness (DUT + drivers + monitor + tests), instantiated
-// four times by tb_cfg_sequences and run one after the other:
+// five times by tb_cfg_sequences and run one after the other:
 //   topo4:      TOPOLOGY '{20,12,9,5},    PARALLEL_INPUTS 4, PARALLEL_NEURONS '{3,4,2}
 //   topo5:      TOPOLOGY '{30,17,9,12,6}, PARALLEL_INPUTS 5, PARALLEL_NEURONS '{4,9,5,6}  (5 layers, R8)
 //   topo4_lps1: as topo4 with popcount/argmax LPS 1 and OUT_FIFO_DEPTH 1
 //   topo_hid:   TOPOLOGY '{16,24,20,4},   PARALLEL_INPUTS 8, PARALLEL_NEURONS '{24,1,1}
 //               (hidden layer 1 is the bottleneck: 20 cycles/image with full-fan-in input width;
 //                TOPOLOGY[1] != TOPOLOGY[2] so build_invalid kinds 7/8 stay invalid)
+//   topo_pi1:   as topo4 with PARALLEL_INPUTS 1 (the layer-0 writer emits 20 one-bit words per neuron,
+//               a tail longer than the next header + WAIT; the next message must wait for writer idle)
 // Every test starts with a reset and configures from scratch. Each test prints "PASS <test> [<harness>]".
 //
 // Reference models are BNN_FCC_Model objects built here (not create_random: under xsim
@@ -1178,9 +1180,9 @@ module cfgseq_harness #(
 endmodule
 
 module tb_cfg_sequences;
-  logic go4 = 1'b0, go5 = 1'b0, go6 = 1'b0, go7 = 1'b0;
-  logic done4, done5, done6, done7;
-  int   nerr4, nerr5, nerr6, nerr7;
+  logic go4 = 1'b0, go5 = 1'b0, go6 = 1'b0, go7 = 1'b0, go8 = 1'b0;
+  logic done4, done5, done6, done7, done8;
+  int   nerr4, nerr5, nerr6, nerr7, nerr8;
 
   cfgseq_harness #(
     .NAME("topo4"), .TOTAL_LAYERS(4), .TOPOLOGY('{20, 12, 9, 5}),
@@ -1205,6 +1207,12 @@ module tb_cfg_sequences;
     .PARALLEL_INPUTS(8), .PARALLEL_NEURONS('{24, 1, 1}), .SEED(53)
   ) u_topo_hid (.go(go7), .done(done7), .nerr(nerr7));
 
+  // One-bit layer-0 input width: long writer emission tails between configuration messages.
+  cfgseq_harness #(
+    .NAME("topo_pi1"), .TOTAL_LAYERS(4), .TOPOLOGY('{20, 12, 9, 5}),
+    .PARALLEL_INPUTS(1), .PARALLEL_NEURONS('{3, 4, 2}), .SEED(67)
+  ) u_topo_pi1 (.go(go8), .done(done8), .nerr(nerr8));
+
   initial begin
     go4 = 1'b1;
     wait (done4 === 1'b1);
@@ -1214,8 +1222,10 @@ module tb_cfg_sequences;
     wait (done6 === 1'b1);
     go7 = 1'b1;
     wait (done7 === 1'b1);
-    if (nerr4 == 0 && nerr5 == 0 && nerr6 == 0 && nerr7 == 0) $display("SUCCESS: tb_cfg_sequences");
-    else $display("tb_cfg_sequences: %0d + %0d + %0d + %0d errors", nerr4, nerr5, nerr6, nerr7);
+    go8 = 1'b1;
+    wait (done8 === 1'b1);
+    if (nerr4 == 0 && nerr5 == 0 && nerr6 == 0 && nerr7 == 0 && nerr8 == 0) $display("SUCCESS: tb_cfg_sequences");
+    else $display("tb_cfg_sequences: %0d + %0d + %0d + %0d + %0d errors", nerr4, nerr5, nerr6, nerr7, nerr8);
     $finish;
   end
 endmodule

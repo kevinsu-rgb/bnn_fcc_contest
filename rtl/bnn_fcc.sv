@@ -14,7 +14,8 @@
 //                 when every memory is loaded and every writer has finished its last RAM write.
 //   pipeline_idle (registered) = no image anywhere (input packer, ping-pong banks, layers, argmax)
 //                 and no image beat accepted this cycle (accept_new is one cycle stale when the
-//                 parser enters WAIT; the parser ignores the first WAIT cycle).
+//                 parser enters WAIT; the parser ignores the first WAIT cycle), and every config
+//                 writer idle, so a new message never cuts the previous message's emission tail.
 //   credits: the output layer starts an image only while
 //            axis_out.count + in_flight + (image starting now) < OUT_FIFO_DEPTH (registered,
 //            conservative), so the output FIFO never overflows.
@@ -316,7 +317,7 @@ module bnn_fcc import bnn_fcc_pkg::*; #(
             start_ok_q  <= (CRD_W'(ao_count) + in_flight_q + CRD_W'(out_start)) < CRD_W'(OUT_FIFO_DEPTH);
             accept_new_q    <= configured && !cfg_busy && (&cw_idle);
             pipeline_idle_q <= !ip_mid && !(data_in_valid && data_in_ready) &&
-                               !(|pp_any_full) && !(|lyr_busy) && !am_busy;
+                               !(|pp_any_full) && !(|lyr_busy) && !am_busy && (&cw_idle);
         end
     end
 

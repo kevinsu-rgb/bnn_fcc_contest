@@ -136,8 +136,9 @@ module cw_case import bnn_fcc_pkg::*; #(
     end
   endtask
 
-  // send first `cnt` bytes of bq with random valid gaps; checks s_ready is independent of s_valid
-  task automatic send(input int cnt);
+  // send first `cnt` bytes of bq with random valid gaps (none if gapless); checks s_ready is
+  // independent of s_valid, and constant 1 when PW >= 8 (emission overlaps the next neuron)
+  task automatic send(input int cnt, input bit gapless = 1'b0);
     int  i;
     bit  r0, r1, v;
     i = 0;
@@ -150,7 +151,10 @@ module cw_case import bnn_fcc_pkg::*; #(
       if (r0 !== r1) begin
         errors++; $error("F=%0d N=%0d PW=%0d PN=%0d: s_ready depends on s_valid", F, N, PW, PN);
       end
-      v = ($urandom_range(3, 0) != 0);
+      if (PW >= 8 && r1 !== 1'b1) begin
+        errors++; $error("F=%0d N=%0d PW=%0d PN=%0d: s_ready low with PW >= 8", F, N, PW, PN);
+      end
+      v = gapless || ($urandom_range(3, 0) != 0);
       s_valid <= v;
       @(posedge clk);
       if (v && s_ready) i++;
@@ -237,7 +241,7 @@ module cw_case import bnn_fcc_pkg::*; #(
     end
   endtask
 
-  int cut;
+  int cut, nw_abort;
   initial begin
     done = 1'b0; errors = 0;
     for (int l = 0; l < PN; l++) begin
@@ -258,27 +262,41 @@ module cw_case import bnn_fcc_pkg::*; #(
     pulse(0);
     arm_idle(N * PASSES);
     send(bq.size());
-    repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+    repeat (PASSES + 6) @(negedge clk);   // drain: last neuron's PASSES words + input/write registers
     check_idle_high("weights");
     check_weights("clean");
+
+    // weights: gapless bytes (emission overlaps the next neuron's bytes every cycle)
+    rnd_weights(); build_weights();
+    clear_seen();
+    pulse(0);
+    arm_idle(N * PASSES);
+    send(bq.size(), 1'b1);
+    repeat (PASSES + 6) @(negedge clk);
+    check_idle_high("weights gapless");
+    check_weights("gapless");
 
     // weights: aborted message (several cut points), then a full message into the same memories
     for (int r = 0; r < 4; r++) begin
       rnd_weights(); build_weights();
-      cut = (r == 0) ? 1 : (r == 1) ? bq.size() - 1 : $urandom_range(bq.size() - 1, 1);
+      cut = (r == 0) ? 1 : (r == 1) ? bq.size() - 1 : (r == 2) ? BPN : $urandom_range(bq.size() - 1, 1);
       if (cut < 1) cut = 1;
       clear_seen();
       pulse(0);
       send(cut);
       pulse(1);
       check_idle_high("after weight abort");
-      repeat (3) @(negedge clk);
+      nw_abort = n_wr;
+      repeat (PASSES + 6) @(negedge clk);
+      if (n_wr != nw_abort) begin
+        errors++; $error("F=%0d N=%0d PW=%0d PN=%0d: %0d weight writes after abort@%0d", F, N, PW, PN, n_wr - nw_abort, cut);
+      end
       rnd_weights(); build_weights();
       clear_seen();
       pulse(0);
       arm_idle(N * PASSES);
       send(bq.size());
-      repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+      repeat (PASSES + 6) @(negedge clk);   // drain: last neuron's PASSES words + input/write registers
       check_idle_high("weights after abort");
       check_weights($sformatf("after abort@%0d", cut));
     end
@@ -291,7 +309,7 @@ module cw_case import bnn_fcc_pkg::*; #(
       pulse(0);
       arm_idle(N);
       send(bq.size());
-      repeat (3) @(negedge clk);
+      repeat (5) @(negedge clk);
       check_idle_high("thresholds");
       check_thr($sformatf("round %0d", r));
     end
@@ -307,7 +325,7 @@ module cw_case import bnn_fcc_pkg::*; #(
     pulse(0);
     arm_idle(N);
     send(bq.size());
-    repeat (3) @(negedge clk);
+    repeat (5) @(negedge clk);
     check_idle_high("thresholds after abort");
     check_thr("after abort");
 
@@ -318,7 +336,7 @@ module cw_case import bnn_fcc_pkg::*; #(
     pulse(0);
     arm_idle(N * PASSES);
     send(bq.size());
-    repeat (12) @(negedge clk);   // drain: up to 8 words from the last byte
+    repeat (PASSES + 6) @(negedge clk);   // drain: last neuron's PASSES words + input/write registers
     check_idle_high("weights");
     check_weights("after thr");
     if (n_tr != 0) begin errors++; $error("threshold write during weight message"); end
@@ -329,7 +347,7 @@ module cw_case import bnn_fcc_pkg::*; #(
 endmodule
 
 module tb_cfg_layer_writer;
-  localparam int NC = 6;
+  localparam int NC = 8;
   logic clk = 1'b0;
   always #5 clk = ~clk;
 
@@ -342,6 +360,9 @@ module tb_cfg_layer_writer;
   cw_case #(.F(8),   .N(8),   .PW(8),  .PN(8))  c3 (.clk(clk), .done(done[3]), .errors(errs[3]));
   cw_case #(.F(256), .N(10),  .PW(66), .PN(1))  c4 (.clk(clk), .done(done[4]), .errors(errs[4]));
   cw_case #(.F(20),  .N(9),   .PW(64), .PN(9))  c5 (.clk(clk), .done(done[5]), .errors(errs[5]));
+  // single pass (judged layer-1 shape) and F % 8 != 0 with overlapped emission
+  cw_case #(.F(256), .N(10),  .PW(256), .PN(3)) c6 (.clk(clk), .done(done[6]), .errors(errs[6]));
+  cw_case #(.F(13),  .N(7),   .PW(13), .PN(2))  c7 (.clk(clk), .done(done[7]), .errors(errs[7]));
 
   initial begin
     #50ms;

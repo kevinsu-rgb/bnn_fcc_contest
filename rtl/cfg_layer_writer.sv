@@ -1,10 +1,16 @@
 // Per-layer configuration writer: turns a payload byte stream into bnn_layer config writes.
-// Weights: each neuron is ceil(F/8) bytes (bit i at byte i/8 bit i%8); bytes go through a bit_packer
-// (8 -> PW bits, pad 1) and each emitted word is written to lane (neuron % PN) at
-// group*PASSES + pass. Thresholds: 4 bytes little-endian, signed 32-bit, clamped to [0, F+1].
-// s_ready depends on registered state only. Writes are single-cycle pulses.
-// idle: low from the cycle after start until the message's last write (weights: flush of neuron N-1;
-// thresholds: write of neuron N-1), high from the cycle after it; abort and rst force it high.
+// Every accepted byte is registered first (in_*_q) and handled one cycle later.
+// Weights: each neuron is ceil(F/8) bytes (bit i at byte i/8 bit i%8). Byte b is stored at fixed
+// position stage[8b +: 8] (bits >= F dropped). After the neuron's last byte the writer emits PASSES
+// words, one per cycle: word p = stage bits [p*PW, (p+1)*PW), bits >= F padded with 1, written to
+// lane (neuron % PN) at group*PASSES + p.
+//   PW >= 8 (OVERLAP): emission overlaps the next neuron's bytes (byte b < word p never overlaps word p,
+//            and PASSES <= ceil(F/8)), so s_ready is constant 1.
+//   PW <  8: s_ready drops from the cycle after a neuron's last byte until its emission ends.
+// Thresholds: 4 bytes little-endian, signed 32-bit, clamped to [0, F+1].
+// The write ports are registered. s_ready depends on registered state only.
+// idle: low from the cycle after start until the message's last write (weights: last word of neuron
+// N-1; thresholds: neuron N-1), high from the cycle after it; abort and rst force it high.
 module cfg_layer_writer import bnn_fcc_pkg::*; #(
   parameter int F       = 8,
   parameter int N       = 8,
@@ -40,16 +46,16 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   localparam int TADDR_W = bits(GROUPS);
   localparam int BPN     = cdiv(F, 8);
   localparam int BN_W    = bits(BPN);
-  localparam int LAST_BITS = F - 8 * (BPN - 1);
+  localparam int P_W     = bits(PASSES);
+  localparam int PADW    = PASSES * PW - F;
+  localparam bit OVERLAP = (PW >= 8);
   localparam logic [LANE_W-1:0]  LAST_LANE  = LANE_W'((N - 1) % PN);        // lane of neuron N-1
-  localparam logic [WADDR_W-1:0] LAST_GBASE = WADDR_W'((GROUPS - 1) * PASSES);
+  localparam logic [WADDR_W-1:0] LAST_WADDR = WADDR_W'(GROUPS * PASSES - 1); // its last word
   localparam logic [TADDR_W-1:0] LAST_GRP   = TADDR_W'(GROUPS - 1);
 
-  // Message type is latched at start so a writer's tail flush does not depend on the
-  // parser's (shared) msg_type staying stable after the message's last byte.
-  logic mt_q, mt;
+  // Message type latched at start; the parser never presents a byte in the start cycle.
+  logic mt_q;
   always_ff @(posedge clk) if (start) mt_q <= msg_type;
-  assign mt = start ? msg_type : mt_q;
 
   logic clr;
   assign clr = start || abort;
@@ -57,40 +63,83 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   logic acc;
   assign acc = s_valid && s_ready;
 
-  // ---------------- weights
-  logic            pk_ready, pk_valid, pk_flush_done;
-  logic [PW-1:0]   pk_word;
-  logic [BN_W-1:0] bn_q;
+  // ---------------- input register
+  logic            in_v_q, in_last_q;
+  logic [7:0]      in_byte_q;
+  logic [BN_W-1:0] in_bn_q, bn_q;
   logic            last_byte;
-  logic [3:0]      nbits;
-  logic [LANE_W-1:0]  lane_q;
-  logic [WADDR_W-1:0] waddr_q, gbase_q;
 
   assign last_byte = (bn_q == BN_W'(BPN - 1));
-  assign nbits     = last_byte ? 4'(LAST_BITS) : 4'd8;
-
-  bit_packer #(.IN_W(8), .OUT_W(PW), .PAD(1'b1)) u_pk (
-    .clk(clk), .rst(rst), .clear(clr),
-    .in_valid(s_valid && !mt), .in_ready(pk_ready),
-    .in_bits(s_byte), .in_count(nbits), .in_flush(last_byte),
-    .out_valid(pk_valid), .out_word(pk_word), .flush_done(pk_flush_done)
-  );
-
-  assign s_ready = mt ? 1'b1 : pk_ready;
-  assign w_we    = pk_valid && !mt;
-  assign w_lane  = lane_q;
-  assign w_addr  = waddr_q;
-  assign w_data  = pk_word;
 
   always_ff @(posedge clk) begin
     if (rst || clr) begin
-      bn_q    <= '0;
+      in_v_q    <= 1'b0;
+      in_last_q <= 1'b0;
+      bn_q      <= '0;
+    end else begin
+      in_v_q <= acc;
+      if (acc) begin
+        in_last_q <= !mt_q && last_byte;
+        if (!mt_q) bn_q <= last_byte ? '0 : bn_q + 1'b1;
+      end
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (acc) begin
+      in_byte_q <= s_byte;
+      in_bn_q   <= bn_q;
+    end
+  end
+
+  // ---------------- weights: neuron staging register (fixed byte positions)
+  logic [F-1:0] stage;
+  logic         wr_byte;
+
+  assign wr_byte = in_v_q && !mt_q;
+
+  for (genvar c = 0; c < BPN; c++) begin : g_byte
+    localparam int NB = imin(8, F - 8 * c);
+    always_ff @(posedge clk)
+      if (wr_byte && in_bn_q == BN_W'(c)) stage[8*c +: NB] <= in_byte_q[NB-1:0];
+  end
+
+  // Word view of the padded neuron; rows >= PASSES are never selected.
+  logic [PASSES*PW-1:0] padded;
+  logic [PW-1:0]        words [2**P_W];
+
+  if (PADW > 0) begin : g_pad
+    assign padded = {{PADW{1'b1}}, stage};
+  end else begin : g_nopad
+    assign padded = stage;
+  end
+
+  always_comb begin
+    for (int r = 0; r < 2**P_W; r++)
+      words[r] = (r < PASSES) ? padded[r*PW +: PW] : '1;
+  end
+
+  // ---------------- weights: emission
+  logic               em_q, em_start, em_last;
+  logic [P_W-1:0]     p_q;
+  logic [LANE_W-1:0]  lane_q;
+  logic [WADDR_W-1:0] waddr_q, gbase_q;
+
+  assign em_start = wr_byte && in_last_q;
+  assign em_last  = (p_q == P_W'(PASSES - 1));
+  assign s_ready  = mt_q || OVERLAP || (!(in_v_q && in_last_q) && !em_q);
+
+  always_ff @(posedge clk) begin
+    if (rst || clr) begin
+      em_q    <= 1'b0;
+      p_q     <= '0;
       lane_q  <= '0;
       waddr_q <= '0;
       gbase_q <= '0;
-    end else if (!mt) begin
-      if (acc) bn_q <= last_byte ? '0 : bn_q + 1'b1;
-      if (pk_flush_done) begin
+    end else if (em_q) begin
+      if (em_last) begin
+        em_q <= em_start;   // the next neuron may complete in the cycle this emission ends
+        p_q  <= '0;
         if (lane_q == LANE_W'(PN - 1)) begin
           lane_q  <= '0;
           gbase_q <= WADDR_W'(int'(gbase_q) + PASSES);
@@ -99,16 +148,28 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
           lane_q  <= lane_q + 1'b1;
           waddr_q <= gbase_q;
         end
-      end else if (pk_valid) begin
+      end else begin
+        p_q     <= p_q + 1'b1;
         waddr_q <= waddr_q + 1'b1;
       end
+    end else if (em_start) begin
+      em_q <= 1'b1;
     end
+  end
+
+  // registered write port
+  always_ff @(posedge clk) begin
+    if (rst || clr) w_we <= 1'b0;
+    else            w_we <= em_q;
+    w_lane <= lane_q;
+    w_addr <= waddr_q;
+    w_data <= words[p_q];
   end
 
   // ---------------- idle (message active until its last write)
   logic active_q, w_done, t_done;
-  assign w_done = !mt && pk_flush_done && (lane_q == LAST_LANE) && (gbase_q == LAST_GBASE);
-  assign t_done = mt && (HAS_THR ? (t_we && t_lane == LAST_LANE && t_addr == LAST_GRP) : 1'b1);
+  assign w_done = w_we && (w_lane == LAST_LANE) && (w_addr == LAST_WADDR);
+  assign t_done = mt_q && (HAS_THR ? (t_we && t_lane == LAST_LANE && t_addr == LAST_GRP) : 1'b1);
   assign idle   = !active_q;
 
   always_ff @(posedge clk) begin
@@ -117,7 +178,7 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
     else if (w_done || t_done) active_q <= 1'b0;
   end
 
-  // ---------------- thresholds
+  // ---------------- thresholds (from the input register)
   logic [1:0]         tb_q;
   logic [23:0]        tsh_q;
   logic [LANE_W-1:0]  tlane_q;
@@ -125,7 +186,7 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
   logic signed [31:0] tval;
   logic [THR_W-1:0]   tclamp;
 
-  assign tval = {s_byte, tsh_q};
+  assign tval = {in_byte_q, tsh_q};
   always_comb begin
     if (tval < 0)                          tclamp = '0;
     else if (tval > 32'(F + 1))            tclamp = THR_W'(F + 1);
@@ -140,8 +201,8 @@ module cfg_layer_writer import bnn_fcc_pkg::*; #(
         tsh_q   <= '0;
         tlane_q <= '0;
         tgrp_q  <= '0;
-      end else if (mt && acc) begin
-        tsh_q <= {s_byte, tsh_q[23:8]};
+      end else if (in_v_q && mt_q) begin
+        tsh_q <= {in_byte_q, tsh_q[23:8]};
         tb_q  <= tb_q + 1'b1;
         if (tb_q == 2'd3) begin
           t_we   <= 1'b1;
