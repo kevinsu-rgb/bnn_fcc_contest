@@ -15,7 +15,6 @@ files:
   - ../rtl/bnn_fcc_pkg.sv
   - ../rtl/argmax.sv
   - ../rtl/axis_out.sv
-  - ../rtl/bit_packer.sv
   - ../rtl/bnn_layer.sv
   - ../rtl/cfg_byte_serializer.sv
   - ../rtl/cfg_layer_writer.sv

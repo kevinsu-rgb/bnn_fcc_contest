@@ -17,7 +17,7 @@ All simulation uses Vivado 2025.2 xsim; lint uses Verilator. Run everything from
 A run passes iff xvlog/xelab/xsim all exit 0, the log contains `SUCCESS`, and it contains no `Error:`, `Fatal:`, `FAILURE` or `ERROR:` line.
 
 ### Unit testbenches
-`tb_popcount`, `tb_bit_packer`, `tb_pingpong_buf`, `tb_neuron_processor`, `tb_bnn_layer` (includes LPS=1/2 cases), `tb_argmax`, `tb_axis_out`, `tb_input_packer`, `tb_cfg_byte_serializer`, `tb_cfg_parser`, `tb_cfg_layer_writer`, `tb_cfg_sequences` (4-layer, 5-layer and an LPS=1 / argmax LPS=1 / FIFO depth 1 instance), `tb_mnist` (real model, 100 MNIST images, 0.8 valid probability, random `data_out_ready`).
+`tb_popcount`, `tb_pingpong_buf`, `tb_neuron_processor`, `tb_bnn_layer` (includes LPS=1/2 cases), `tb_argmax`, `tb_axis_out`, `tb_input_packer`, `tb_cfg_byte_serializer`, `tb_cfg_parser`, `tb_cfg_layer_writer`, `tb_cfg_sequences` (4-layer, 5-layer and an LPS=1 / argmax LPS=1 / FIFO depth 1 instance), `tb_mnist` (real model, 100 MNIST images, 0.8 valid probability, random `data_out_ready`).
 
 ### Provided-TB regression configurations (`sim/cfg/`)
 `sfc_stress`, `sfc_perf`, `sfc_pn1`, `sfc_alt`, `sfc_orig`, `c_8888`, `c_13753`, `c_13753_bus8`, `c_100`, `c_100_bus`, `c_tiny`. Each is a small module that instantiates `bnn_fcc_tb` with parameter overrides (array parameters cannot be set from the command line) and includes `xsim_tb_fix.svh`. A `c_5layer` configuration was dropped: the provided TB cannot elaborate `CUSTOM_LAYERS != 4` under xsim (`bnn_fcc_tb.sv:123`); a 5-layer topology is covered by `tb_cfg_sequences`.
