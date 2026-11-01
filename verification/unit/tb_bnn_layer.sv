@@ -28,8 +28,8 @@ module bl_case import bnn_fcc_pkg::*; #(
   localparam int NA        = NIMG / 2;
   // A no-bubble opportunity needs the producer to refill a bank (PASSES cycles) within one image and,
   // for hidden layers, the previous output bank to be committed and released within one image.
-  // (issue -> output commit is 2 (read) + NPL + 1 (result register) cycles)
-  localparam bit NB_REQ    = (GP >= PASSES + 1) && (IS_OUTPUT || GP >= NPL + 5);
+  // (issue -> output commit is 3 (read) + NPL + 1 (result register) cycles)
+  localparam bit NB_REQ    = (GP >= PASSES + 1) && (IS_OUTPUT || GP >= NPL + 6);
 
   logic                 rst = 1'b1;
   // config ports
